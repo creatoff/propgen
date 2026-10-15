@@ -346,20 +346,21 @@ def steps_status(r):
 
 
 def _minimum(r):
-    """Минимальный набор: ComfyUI с нодами + модели core + Blender + Python-зависимости."""
+    """Минимальный набор: ComfyUI с нодами + модели core + Blender + Python-зависимости.
+    missing — в родительном падеже: читается и как «Не хватает: …», и в пометке окна настроек."""
     c, miss, dl = r["comfy"], [], []
     if not c["ok"]:
-        miss.append("ComfyUI")
+        miss.append("связи с ComfyUI")
     else:
-        miss += [f"нода {n['name']}" for n in c["nodes"] if not n["ok"]]
+        miss += [f"ноды {n['name']}" for n in c["nodes"] if not n["ok"]]
         core = [m for m in c["models"] if m["group"] == "core" and not m["ok"]]
         if core:
-            miss.append(f"модели основного пути ({len(core)} шт.)")  # объём — на кнопке «Скачать»
+            miss.append(f"моделей основного пути ({len(core)} шт.)")  # объём — на кнопке «Скачать»
             dl = ["core"]
     if not r["blender"]["ok"]:
         miss.append("Blender 4.2+")
     if not r["python"]["ok"]:
-        miss.append("Python-зависимости")
+        miss.append("Python-зависимостей")
     return {"ok": not miss, "missing": miss, "download": dl}
 
 

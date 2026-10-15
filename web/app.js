@@ -1305,7 +1305,12 @@ setTimeout(() => checkUpdate(1, true), 4000);
 setInterval(() => { if (!updRun.busy && Date.now() - updAt >= UPD_EVERY) checkUpdate(1, true); }, 60 * 1000);
 
 // первый запуск: если чего-то не хватает — сразу показать проверку
-api("/api/doctor").then(r => { if (!setupReady(r)) openSettings("Не всё готово к работе — вот что поправить.", "system"); else $("#settingsBtn").classList.remove("alert"); }).catch(() => {});
+// окно открывается само — пометка объясняет почему, конкретно (подробности — в блоке «Не хватает…» ниже)
+api("/api/doctor").then(r => {
+  if (setupReady(r)) return $("#settingsBtn").classList.remove("alert");
+  const miss = r.minimum?.missing || [];
+  openSettings(miss.length ? `Открылось при запуске — не хватает ${miss.join(", ")}` : "Открылось при запуске — есть что поправить", "system");
+}).catch(() => {});
 
 enhance();  // свои выпадающие списки, ползунки и числовые поля
 setTab("crop");
