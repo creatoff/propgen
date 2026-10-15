@@ -328,7 +328,8 @@ def sec_server(b):
 def sec_doctor(b):
     """doctor из .venv: его пункт «python» проверяет зависимости того интерпретатора, в котором запущен."""
     in_venv = os.path.exists(VENV_PY) and os.path.normcase(os.path.abspath(sys.executable)) == os.path.normcase(VENV_PY)
-    if os.path.exists(VENV_PY) and not in_venv:
+    # всегда отдельным процессом, если есть .venv: падение нативного модуля внутри doctor не должно убить сбор архива
+    if os.path.exists(VENV_PY):
         rc, out, err = run([VENV_PY, os.path.join(TOOLS, "doctor.py"), "--json"], 400)
         try:
             r = json.loads(out)

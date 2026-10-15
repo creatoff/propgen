@@ -107,6 +107,7 @@ NODES = {
     "SaveGLB": "ядро ComfyUI — обнови ComfyUI",
 }
 PY_DEPS = ["fastapi", "uvicorn", "multipart", "PIL", "numpy", "scipy", "skimage", "trimesh", "pymeshlab"]
+PIP_NAME = {"multipart": "python-multipart", "PIL": "pillow", "skimage": "scikit-image"}  # имя импорта ≠ пакет pip
 
 
 def _get(path, timeout=10):
@@ -226,15 +227,58 @@ def check_llm():
     return res
 
 
+VCREDIST = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+_PROBE = ("import importlib, sys\n"
+          "for d in sys.argv[1:]:\n"
+          "    print('try', d, flush=True)\n"
+          "    try:\n"
+          "        importlib.import_module(d)\n"
+          "        print('ok', d, flush=True)\n"
+          "    except Exception as e:\n"
+          "        print('missing', d, type(e).__name__, flush=True)\n")
+
+
 def check_python():
-    import importlib
-    missing = []
-    for d in PY_DEPS:
+    """Импорт зависимостей — в отдельном процессе. Нативные модули (pymeshlab с Qt, scipy, skimage) при несовместимой
+    системной DLL падают «access violation» и роняют процесс целиком: раньше так падал сервер на /api/doctor и молча
+    умирал setup.cmd. Упавший модуль = последний «try» без ответа; остальные проверяем следующим запуском."""
+    missing, crashed, left = [], [], list(PY_DEPS)
+    while left:
         try:
-            importlib.import_module(d)
-        except Exception:  # noqa: BLE001
-            missing.append(d)
-    return {"ok": not missing, "missing": missing, "python": sys.executable}
+            p = subprocess.run([sys.executable, "-c", _PROBE, *left], capture_output=True, text=True, timeout=180,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except subprocess.TimeoutExpired:
+            crashed.append({"name": left[0], "code": "timeout"})
+            left = left[1:]
+            continue
+        done = set()
+        for line in p.stdout.splitlines():
+            kind, _, rest = line.partition(" ")
+            name = rest.split(" ")[0]
+            if kind in ("ok", "missing"):
+                done.add(name)
+                if kind == "missing":
+                    missing.append(name)
+        left = [d for d in left if d not in done]
+        if p.returncode != 0 and left:
+            code = p.returncode & 0xFFFFFFFF
+            crashed.append({"name": left[0], "code": f"0x{code:08X}"})
+            left = left[1:]
+        elif p.returncode != 0:
+            break
+    res = {"ok": not missing and not crashed, "missing": missing + [c["name"] for c in crashed], "crashed": crashed,
+           "python": sys.executable}
+    if crashed:
+        # 0xC0000005 при импорте нативного модуля на Windows — почти всегда устаревший Visual C++ Redistributable:
+        # колёса собраны новой студией, а в процесс грузится старая msvcp140.dll из System32
+        names = ", ".join(c["name"] for c in crashed)
+        if any(c["code"] == "0xC0000005" for c in crashed):
+            res["fix"] = (f"{names} падает при импорте (0xC0000005, нарушение доступа) — установите свежий Microsoft "
+                          f"Visual C++ Redistributable x64: {VCREDIST}, затем перезапустите start.cmd")
+        else:
+            res["fix"] = (f"{names} падает при импорте ({crashed[0]['code']}) — переустановите: "
+                          f".venv\\Scripts\\python -m pip install --force-reinstall {' '.join(PIP_NAME.get(c['name'], c['name']) for c in crashed)}")
+    return res
 
 
 def check_hdri():
@@ -492,7 +536,8 @@ def report(r):
     print(f"{ok(llm['ok'])} текстовая модель: режим {llm['mode']}, ключ OpenAI {'есть' if llm['openai_key'] else 'нет'}, "
           f"LM Studio {'есть' if llm['lms'] else 'нет'}, локальная модель {'есть' if llm['local_model_ok'] else 'нет'}")
     p = r["python"]
-    print(f"{ok(p['ok'])} Python-зависимости" + (f": нет {', '.join(p['missing'])} — pip install -r requirements.txt" if p["missing"] else ""))
+    print(f"{ok(p['ok'])} Python-зависимости" + (f": {p['fix']}" if p.get("fix") else
+                                                 f": нет {', '.join(p['missing'])} — pip install -r requirements.txt" if p["missing"] else ""))
     h = r["hdri"]
     print(f"{ok(h['ok'])} панорамы 4k: {h['have']}/{h['total']} (необязательно)")
 

@@ -1079,7 +1079,7 @@ function workflow(r) {
         : `${esc(c.url)} · нода GGUF ${gguf?.ok ? "есть" : "нет"} · ${esc(String(c.gpu || "").replace(/^\w+:\d+\s+/, "").replace(/\s+:\s+\w+$/, ""))} · ${c.vram_gb} ГБ видеопамяти`));
   }
   base.push(py.ok ? chkRow("ok", "Python-зависимости", esc(py.python))
-    : chkRow("bad", "Python-зависимости", `нет: ${esc(py.missing.join(", "))} — запусти setup.cmd`));
+    : chkRow("bad", "Python-зависимости", esc(py.fix || `нет: ${py.missing.join(", ")} — запусти setup.cmd`)));
   html += '<div class="fg-h">Основа</div><div class="checks">' + base.join("") + "</div>";
 
   // шаги: варианты — «таблетки» (✓ есть, ✕/○ нет, рамка — используется сейчас); под ними — чего не хватает и кнопка
@@ -1148,7 +1148,7 @@ function flatChecks(r) {
     l.ok ? "" : goBtn("llm", "Настроить"));
   const py = r.python;
   if (py.ok) add("ok", "Python-зависимости", esc(py.python));
-  else add("bad", "Python-зависимости", `нет: ${esc(py.missing.join(", "))} — запусти setup.cmd`);
+  else add("bad", "Python-зависимости", esc(py.fix || `нет: ${py.missing.join(", ")} — запусти setup.cmd`));
   const h = r.hdri;
   add(h.ok ? "ok" : "opt", "Панорамы 4k для фона — по желанию", `${h.have} из ${h.total}`, h.ok ? "" : '<button class="small" data-dl="hdri">Скачать ~80 МБ</button>');
   $("#checks").innerHTML = rows.join("");
