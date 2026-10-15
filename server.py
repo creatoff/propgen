@@ -26,7 +26,8 @@ PROPS = os.path.join(ROOT, "work", "props")
 TOOLS = os.path.join(ROOT, "tools")
 PY = sys.executable  # скрипты Comfy работают на stdlib, venv подходит
 VIEWS = ("front", "left", "back", "right")
-DEFAULTS = {"mode": "single", "single_src": "front", "model": "trellis2", "tris": 1500, "tex": 1024, "crease": 50, "seed": 1, "rot": 0}
+DEFAULTS = {"mode": "single", "single_src": "front", "model": "trellis2", "tris": 1500, "tex": 1024, "crease": 50, "seed": 1, "rot": 0,
+            "height_cm": 0, "export_sources": False}
 os.makedirs(PROPS, exist_ok=True)
 sys.path.insert(0, TOOLS)
 import llm  # noqa: E402 — описание пропа локальной моделью (LM Studio, GPU через очередь)
@@ -34,6 +35,7 @@ import comfywatch  # noqa: E402 — живой прогресс ComfyUI (websock
 import llm_openai  # noqa: E402 — описание через OpenAI API: быстро, без видеокарты, экономно
 import config  # noqa: E402 — config.json: пути, адреса, ключ, режим текстовой модели
 import doctor  # noqa: E402 — проверка окружения и докачка моделей
+import pack  # noqa: E402 — архив пропа для движков (структура Poly Haven)
 
 comfywatch.start()
 
@@ -507,6 +509,27 @@ def get_log(pid: str, step: str):
         return {"log": ""}
     with open(p, encoding="utf-8", errors="replace") as f:
         return {"log": f.read()[-6000:]}
+
+
+@app.post("/api/props/{pid}/export")
+def export_prop(pid: str, body: dict):
+    """Архив для движков: glb, gltf, fbx, obj, текстуры по схеме Poly Haven, info.json; по желанию — исходники.
+    Blender без видеокарты, ~10 с — прямо в запросе, мимо очереди."""
+    m = load(pid)
+    p = m["params"]
+    height = float(body.get("height_cm", p.get("height_cm") or 0) or 0)
+    sources = bool(body.get("sources", p.get("export_sources")))
+    os.makedirs(pdir(pid, "logs"), exist_ok=True)
+
+    def log(text):
+        with open(pdir(pid, "logs", "export.log"), "a", encoding="utf-8") as f:
+            f.write(f"\n=== {time.strftime('%H:%M:%S')}\n{text}\n")
+    try:
+        zpath, info = pack.build(pdir(pid), m, height_cm=height, sources=sources, log=log)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, str(e)[-800:])
+    rel = os.path.relpath(zpath, pdir(pid)).replace("\\", "/")
+    return {**info, "url": f"/files/{pid}/{rel}?t={int(os.path.getmtime(zpath))}"}
 
 
 # ---------- настройки и проверка окружения

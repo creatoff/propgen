@@ -183,12 +183,30 @@
         </div>
       </div>
 
-      <div class="group" id="outGroup">
+      <div class="group result" id="outGroup">
         <div class="gh" data-g="out">Результат</div>
-        <div class="maps" id="maps"></div>
-        <div class="downloads" id="downloads"></div>
-      </div>
+        <div class="res-sum" id="resSum"></div>
 
+        <div class="res-maps" id="maps"></div>
+
+        <div class="res-sec">
+          <div class="res-h">Экспорт</div>
+          <label class="res-height" title="Модель масштабируется под эту высоту, 1 единица = 1 метр. Пусто — как есть">
+            <span>Реальная высота</span>
+            <span class="unit"><input type="number" data-p="height_cm" min="0" max="10000" step="1" placeholder="как есть"><i>см</i></span>
+          </label>
+          <label class="check res-src" title="Хай-поли, фото, кадр и чистый фронт — в папку source/">
+            <input type="checkbox" data-p="export_sources"><span>Положить исходники<small>хай-поли, фото, кадр, фронт</small></span>
+          </label>
+          <button class="primary res-zip" id="exportBtn"><b>⬇ Скачать архив</b><small>glb · gltf · fbx · obj · текстуры</small></button>
+          <p class="hint">Текстуры по схеме Poly Haven: цвет, нормали OpenGL и DirectX, AO. Низ модели — на полу, по центру.</p>
+        </div>
+
+        <div class="res-sec">
+          <div class="res-h">Отдельные файлы</div>
+          <div class="downloads" id="downloads"></div>
+        </div>
+      </div>
     </div>
   </aside>
 

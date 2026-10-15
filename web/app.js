@@ -52,7 +52,10 @@ async function select(id) {
   $("#insp").hidden = false;
   $("#runAll").disabled = false;
   for (const inp of $$("[data-f]")) inp.value = cur[inp.dataset.f] || "";
-  for (const inp of $$("[data-p]")) inp.value = cur.params[inp.dataset.p] ?? { single_src: "front", rot: 0 }[inp.dataset.p] ?? "";
+  for (const inp of $$("[data-p]")) {
+    const v = cur.params[inp.dataset.p] ?? { single_src: "front", rot: 0 }[inp.dataset.p] ?? "";
+    if (inp.type === "checkbox") inp.checked = !!v; else inp.value = inp.dataset.p === "height_cm" && !v ? "" : v;
+  }
   setVmode(cur.params);
   showParams();
   // фото
@@ -88,8 +91,22 @@ $$("#tabs button").forEach(b => b.onclick = () => cur && setTab(b.dataset.tab));
 for (const inp of $$("[data-f]")) inp.onchange = () => patch({ [inp.dataset.f]: inp.value }).then(loadList);
 for (const inp of $$("[data-p]")) {
   inp.oninput = showParams;
-  inp.onchange = () => patch({ params: { [inp.dataset.p]: ["model", "single_src"].includes(inp.dataset.p) ? inp.value : +inp.value } });
+  inp.onchange = () => patch({ params: { [inp.dataset.p]: inp.type === "checkbox" ? inp.checked
+    : ["model", "single_src"].includes(inp.dataset.p) ? inp.value : +inp.value } });
 }
+$("#exportBtn").onclick = async () => {
+  if (!cur) return;
+  const b = $("#exportBtn");
+  b.disabled = true; b.querySelector("b").textContent = "⬇ Собираю архив…";
+  try {
+    const r = await api(`/api/props/${cur.id}/export`, json("POST", { height_cm: +$("[data-p=height_cm]").value || 0, sources: $("[data-p=export_sources]").checked }));
+    const a = document.createElement("a");
+    a.href = r.url; a.download = r.slug + ".zip"; document.body.append(a); a.click(); a.remove();
+    const s = r.size_m;
+    toast(`${r.slug}.zip · ${(r.bytes / 2 ** 20).toFixed(1)} МБ · ${r.triangles} тр. · ${Math.round(s.width * 100)}×${Math.round(s.depth * 100)}×${Math.round(s.height * 100)} см`);
+  } catch (e) { alert(e.message); }
+  b.disabled = false; b.querySelector("b").textContent = "⬇ Скачать архив";
+};
 $("#describeBtn").onclick = async () => {
   if (!cur) return;
   const b = $("#describeBtn");
@@ -260,9 +277,13 @@ function render(m) {
   const maps = ["base", "normal", "ao"].filter(k => f[k]);
   $("#outGroup").hidden = !maps.length && !f.hi;
   $("#maps").innerHTML = maps.map(k =>
-    `<a href="${file(m, f[k])}" download title="скачать PNG"><img src="${file(m, f[k])}" alt="">⬇ ${{ base: "цвет", normal: "нормали", ao: "AO" }[k]}</a>`).join("");
-  $("#downloads").innerHTML = [["lo", "лоу-поли .glb"], ["hi", "хай-поли .glb"]]
-    .filter(([k]) => f[k]).map(([k, t]) => `<a href="${file(m, f[k])}" download>⬇ ${t}</a>`).join("");
+    `<a href="${file(m, f[k])}" download title="скачать PNG"><img src="${file(m, f[k])}" alt=""><span>${{ base: "Цвет", normal: "Нормали", ao: "AO" }[k]}</span><i>⬇</i></a>`).join("");
+  const p = m.params;
+  $("#resSum").innerHTML = f.lo ? `<span><b>${(+p.tris).toLocaleString("ru")}</b> тр.</span><span><b>${p.tex}</b> px</span>` +
+    (p.height_cm ? `<span><b>${p.height_cm}</b> см</span>` : "") + `<span>${p.mode === "multiview" ? "Pixal3D · 4 вида" : { trellis2: "TRELLIS.2", pixal3d: "Pixal3D" }[p.model] || ""}</span>` : "";
+  $("#exportBtn").disabled = !f.lo;
+  $("#downloads").innerHTML = [["lo", "Лоу-поли", ".glb"], ["hi", "Хай-поли", ".glb"]]
+    .filter(([k]) => f[k]).map(([k, t, ext]) => `<a href="${file(m, f[k])}" download><b>${t}</b><small>${ext}</small><i>⬇</i></a>`).join("");
   showModel();
   void stLast;
 }
