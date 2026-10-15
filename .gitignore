@@ -1,0 +1,12 @@
+# окружение и локальные настройки
+.venv/
+__pycache__/
+config.json
+.openai_key
+
+# рабочие данные: пропы, логи, кэш описаний, расход токенов
+work/
+input/
+
+# панорамы 4k качаются при установке (tools/doctor.py download --group hdri); 1k лежат в репозитории
+web/hdri/*_4k.hdr
