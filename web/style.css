@@ -292,35 +292,117 @@ kbd { font: 11px "Cascadia Code", Consolas, monospace; padding: 1px 5px; border-
 button.icon.gear svg { width: 18px; height: 18px; }
 button.icon.gear.alert::after { content: ""; position: absolute; width: 7px; height: 7px; border-radius: 50%; background: var(--err); transform: translate(8px, -8px); }
 button.icon.gear { position: relative; }
-dialog.settings { width: min(980px, calc(100vw - 40px)); height: min(820px, calc(100vh - 40px)); display: none; flex-direction: column; padding: 0; }
+/* Окно в две панели: слева разделы, справа один раздел. Высота фиксирована и меньше экрана 1280×720 —
+   прокручивается только правая панель, шапка с ✕ и подвал с «Сохранить» всегда на виду. */
+dialog.settings { width: min(940px, calc(100vw - 40px)); height: min(700px, calc(100vh - 40px)); display: none; flex-direction: column; padding: 0; overflow: hidden; }
 dialog.settings[open] { display: flex; }
-.set-head, .set-foot { display: flex; align-items: center; gap: 12px; padding: 12px 16px; }
+.set-head, .set-foot { display: flex; align-items: center; gap: 12px; padding: 11px 14px 11px 18px; flex: none; }
 .set-head { border-bottom: 1px solid var(--line); }
 .set-foot { border-top: 1px solid var(--line); }
 .set-head h3 { margin: 0; font-size: 15px; }
-.set-body { flex: 1; overflow-y: auto; padding: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-content: start; background: rgba(0, 0, 0, .18); }
-.card { background: var(--island2); border-radius: var(--r); padding: 12px 14px; display: flex; flex-direction: column; gap: 9px; box-shadow: 0 1px 0 rgba(255, 255, 255, .03) inset; }
-.card.wide { grid-column: 1 / -1; }
-.card-h { display: flex; align-items: center; gap: 8px; }
-.card label { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--dim); }
-.card .hint { margin: 0; line-height: 1.45; }
-.card .hint a { color: var(--acc2); }
+.set-note:not(:empty) { color: var(--acc2); background: var(--acc-soft); font-size: 12px; padding: 2px 10px; border-radius: 20px; }
+.set-main { flex: 1; min-height: 0; display: grid; grid-template-columns: 206px minmax(0, 1fr); }
+
+/* навигация: значок, название с подписью, справа точка-состояние */
+.set-nav { background: rgba(0, 0, 0, .2); padding: 10px 8px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+.set-nav button { display: grid; grid-template-columns: 18px minmax(0, 1fr) 8px; align-items: center; gap: 10px; padding: 7px 10px; text-align: left;
+  background: transparent; border-radius: var(--r2); color: var(--dim); white-space: normal; }
+.set-nav button:hover:not(.on) { background: rgba(255, 255, 255, .04); color: var(--text); }
+.set-nav button.on { background: var(--island3); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, .35); }
+.set-nav svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.set-nav button.on svg { stroke: var(--acc2); }
+.set-nav span { display: flex; flex-direction: column; min-width: 0; font-size: 13px; line-height: 1.3; }
+.set-nav small { font-size: 11px; color: var(--dim2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sdot { width: 7px; height: 7px; border-radius: 50%; }
+.sdot.ok { background: var(--ok); } .sdot.bad { background: var(--err); box-shadow: 0 0 6px var(--err); }
+.sdot.opt { background: var(--acc); } .sdot.new { background: var(--acc); box-shadow: 0 0 6px var(--acc); }
+
+/* правая панель: заголовок раздела, группы полей разделены воздухом */
+.set-pane { overflow-y: auto; min-width: 0; padding: 18px 26px 18px; }
+.set-sec { display: flex; flex-direction: column; gap: 20px; }
+.sec-h { display: flex; align-items: flex-start; gap: 16px; }
+.sec-h > div { flex: 1; min-width: 0; }
+.sec-h h4 { margin: 0; font-size: 16px; font-weight: 600; }
+.sec-h p { margin: 3px 0 0; color: var(--dim); font-size: 12.5px; line-height: 1.45; max-width: 560px; }
+.fgroup { display: flex; flex-direction: column; gap: 10px; }
+.fg-h { display: flex; align-items: baseline; gap: 10px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; color: var(--dim); }
+.fg-h span { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 12px; color: var(--dim2); }
+.fg-h a { color: var(--acc2); }
+/* строка поля: подпись и пояснение слева, поле справа — у всех полей одна ширина */
+.settings .frow { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 4px 24px; align-items: start; max-width: 680px;
+  font-size: 13px; color: var(--text); }
+.fl { display: flex; flex-direction: column; gap: 1px; padding-top: 5px; }
+.fl b { font-weight: 500; }
+.fl small, .fl-d { color: var(--dim); font-size: 11.5px; line-height: 1.4; }
+.fl-d { margin: 0; }
+.fl-d:empty { display: none; }
+.fc { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.frow input:not([type=radio]) { padding: 6px 10px; }
 .row-in { display: flex; gap: 6px; align-items: center; }
 .row-in input { flex: 1; }
-.sep { height: 1px; background: var(--line); margin: 2px 0; }
 .seg.four { grid-template-columns: repeat(4, 1fr); }
-.checks { display: flex; flex-direction: column; gap: 4px; }
-.chk { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 6px 8px; border-radius: var(--r3); background: rgba(0, 0, 0, .18); }
-.chk .ic { font-weight: 700; text-align: center; }
-.chk.ok .ic { color: var(--ok); } .chk.bad .ic { color: var(--err); } .chk.opt .ic { color: var(--acc2); }
-.chk .t { font-weight: 500; }
-.chk .d { color: var(--dim); font-size: 12px; margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
+.seg.four span { padding: 5px 4px; }
+
+/* проверка системы: один остров-список, строка = значок, заголовок, подробность одной строкой, действие */
+.checks { display: flex; flex-direction: column; background: var(--island2); border-radius: var(--r); padding: 2px 0; }
+.checks > .hint { padding: 12px 14px; }
+.chk { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 9px 14px; min-height: 48px; }
+.chk + .chk { box-shadow: 0 -1px 0 var(--line); }
+.chk .ic { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; background: rgba(255, 255, 255, .06); color: var(--dim); }
+.chk.ok .ic { color: var(--ok); background: var(--ok-soft); }
+.chk.bad .ic { color: var(--err); background: var(--err-soft); }
+.chk.opt .ic { color: var(--acc2); background: var(--acc-soft); }
+.chk .tx { min-width: 0; }
+.chk .t { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chk .d { color: var(--dim); font-size: 12px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chk.bad .d { white-space: pre-line; word-break: break-word; }  /* у ошибки нужен весь текст — там сказано, что поправить */
 .chk button { align-self: center; }
-.dl { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--dim); }
+.dl { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--dim); background: var(--island2); border-radius: var(--r); padding: 10px 14px; }
 .dl-row { display: flex; gap: 8px; }
 .dl .bar { display: block; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, .08); overflow: hidden; }
 .dl .bar i { display: block; height: 100%; width: 0; background: var(--acc); transition: width .4s; }
-@media (max-width: 860px) { .set-body { grid-template-columns: 1fr; } }
+
+/* проверка цепочкой: #checks — просто колонка, острова внутри (итог, основа, шаги, просмотрщик) */
+#checks.wf-mode { background: none; padding: 0; gap: 10px; }
+#checks.wf-mode .fg-h { margin-top: 8px; }
+.wf-sum { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 11px 14px; border-radius: var(--r); }
+.wf-sum.ok { background: var(--ok-soft); } .wf-sum.bad { background: var(--err-soft); }
+.wf-sum .ic { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; }
+.wf-sum.ok .ic { color: var(--ok); background: rgba(124, 207, 122, .2); } .wf-sum.bad .ic { color: var(--err); background: rgba(255, 107, 94, .2); }
+.wf-sum > div { min-width: 0; }
+.wf-sum b { display: block; font-weight: 600; }
+.wf-sum small { display: block; color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* шаги: номер в кружке цвета состояния, между кружками — тонкая линия цепочки */
+.wf { display: flex; flex-direction: column; background: var(--island2); border-radius: var(--r); padding: 6px 14px; }
+.wf-step { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 12px; position: relative; padding: 8px 0; }
+.wf-step:not(:last-child)::before { content: ""; position: absolute; left: 11.5px; top: 36px; bottom: -4px; width: 1px; background: var(--line2); }.wf-n { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-style: normal; font-size: 11.5px; font-weight: 600;
+  background: rgba(255, 255, 255, .06); color: var(--dim); }
+.wf-step.ok .wf-n { color: var(--ok); background: var(--ok-soft); }
+.wf-step.bad .wf-n { color: var(--err); background: var(--err-soft); }
+.wf-step.opt .wf-n { color: var(--acc2); background: var(--acc-soft); }
+/* шаг в одну строку: слева название и что делает, справа варианты; строки «чего не хватает» — под вариантами */
+.wf-b { min-width: 0; display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 6px 16px; align-items: start; padding-top: 2px; }
+.wf-h { display: flex; flex-direction: column; min-width: 0; }
+.wf-h b { font-weight: 600; }
+.wf-h span { color: var(--dim); font-size: 11.5px; line-height: 1.35; }
+.wf-tag { font-style: normal; color: var(--dim2); white-space: nowrap; }
+.wf-r { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.wf-opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.wf-o { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px 3px 8px; border-radius: 20px; font-size: 12px; background: rgba(255, 255, 255, .05); color: var(--dim); }
+.wf-o i { font-style: normal; font-weight: 700; font-size: 10.5px; }
+.wf-o.ok { color: var(--text); } .wf-o.ok i { color: var(--ok); }
+.wf-o.bad { color: var(--err); background: var(--err-soft); }
+.wf-o.no i { color: var(--dim2); }
+.wf-o.cur { box-shadow: 0 0 0 1px var(--acc-line) inset; }
+.wf-o em { font-style: normal; font-size: 10px; font-weight: 600; color: var(--acc2); text-transform: uppercase; letter-spacing: .5px; }
+.wf-m { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--dim); min-height: 26px; }
+.wf-m .d { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-m b { color: var(--text); font-weight: 500; }
+.wf-manual { font-size: 11.5px; color: var(--dim2); white-space: nowrap; }
+@media (max-width: 860px) {
+  .set-main { grid-template-columns: 64px minmax(0, 1fr); } .set-nav span { display: none; } .set-nav button { grid-template-columns: 18px 8px; }
+  .settings .frow { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* ---------- вид крупно ---------- */
 .lightbox { position: fixed; inset: 0; z-index: 40; background: rgba(6, 7, 9, .92); backdrop-filter: blur(6px); display: flex; flex-direction: column; }
@@ -349,6 +431,7 @@ select.ux-native { display: none !important; }
 .ux-opt { padding: 6px 28px 6px 10px; border-radius: 6px; cursor: pointer; white-space: nowrap; position: relative; font-size: 13px; }
 .ux-opt:hover, .ux-opt.hi { background: rgba(255, 255, 255, .07); }
 .ux-opt.on { color: var(--acc2); }
+.ux-opt.off { opacity: .45; cursor: default; background: none; }
 .ux-opt.on::after { content: ""; position: absolute; right: 10px; top: 50%; width: 4px; height: 8px; border: solid var(--acc2); border-width: 0 2px 2px 0; transform: translateY(-65%) rotate(45deg); }
 
 input[type=range].ux-range { -webkit-appearance: none; appearance: none; height: 18px; background: transparent; cursor: pointer; --p: 50%; }
@@ -452,3 +535,44 @@ input[type=checkbox]:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--
 .result .downloads a i { margin-left: auto; font-style: normal; color: var(--dim); }
 .result .downloads a:hover { background: var(--acc-soft); color: var(--acc2); }
 .result .downloads a:hover i { color: var(--acc2); }
+
+/* ---------- обновление: раздел настроек и плашка в заголовке окна ---------- */
+.upd { display: flex; flex-direction: column; gap: 14px; font-size: 13px; }
+.upd code, .upd-pop code { font: 11.5px "Cascadia Code", Consolas, monospace; color: var(--acc2); }
+.upd-cur { background: var(--island2); border-radius: var(--r); padding: 11px 14px; display: flex; flex-direction: column; gap: 2px; }
+.upd-cur .lbl { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; color: var(--dim); margin-bottom: 2px; }
+.upd-cur .v { display: flex; gap: 10px; align-items: baseline; min-width: 0; }
+.upd-cur .v span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upd-ok { color: var(--ok); }
+.upd-act:has(> [hidden]) { display: none; }
+/* список коммитов: хэш, сообщение в одну строку, дата справа */
+.commits { list-style: none; margin: 0; padding: 2px 0; background: var(--island2); border-radius: var(--r); }
+.commits li { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; padding: 7px 14px; }
+.commits li + li { box-shadow: 0 -1px 0 var(--line); }
+.commits .s { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.commits .d { color: var(--dim); font-size: 11.5px; white-space: nowrap; }
+.upd-warn, .upd-err, .upd-msg { border-radius: var(--r2); padding: 8px 12px; font-size: 12px; line-height: 1.45; }
+.upd-warn { color: var(--acc2); background: var(--acc-soft); }
+.upd-err { color: var(--err); background: var(--err-soft); }
+.upd-msg { color: var(--text); background: rgba(255, 255, 255, .05); }
+
+/* плашка «Обновление · N» — слева от переключателей панелей; поповер выпадает под ней, прижат к её правому краю */
+.upd-wrap { position: relative; }
+.upd-badge { display: flex; align-items: center; gap: 6px; padding: 4px 12px 4px 9px; border-radius: 20px; font-size: 12.5px; font-weight: 600;
+  background: var(--acc-soft); color: var(--acc2); box-shadow: 0 0 0 1px var(--acc-line) inset; }
+.upd-badge:hover:not(:disabled), .upd-badge[aria-expanded=true] { background: rgba(255, 154, 31, .22); }
+.upd-badge svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.upd-badge.busy svg { animation: pulse 1.2s infinite; }
+.upd-pop { position: absolute; right: 0; top: calc(100% + 8px); z-index: 30; width: 420px; max-width: calc(100vw - 24px); padding: 14px;
+  display: flex; flex-direction: column; gap: 12px; background: var(--island2); border: 1px solid var(--line2); border-radius: var(--r);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .55); }
+.up-h { display: flex; flex-direction: column; gap: 1px; }
+.up-h b { font-size: 14px; font-weight: 600; }
+.upd-pop .commits { background: rgba(0, 0, 0, .22); max-height: 240px; overflow-y: auto; }
+.upd-pop .commits li { padding: 6px 12px; }
+#updPopList:empty, #updPopNote:empty { display: none; }
+#updPopNote { display: flex; flex-direction: column; gap: 8px; }
+.up-foot { display: flex; align-items: center; gap: 8px; }
+
+/* ---------- режимы видов: четыре кнопки в инспекторе ~300 px — подписи в одну строку ---------- */
+.seg.vmodes span { font-size: 12px; padding: 4px 1px; white-space: nowrap; }

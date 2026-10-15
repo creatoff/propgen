@@ -27,7 +27,8 @@ TOOLS = os.path.join(ROOT, "tools")
 PY = sys.executable  # скрипты Comfy работают на stdlib, venv подходит
 VIEWS = ("front", "left", "back", "right")
 DEFAULTS = {"mode": "single", "single_src": "front", "model": "trellis2", "tris": 1500, "tex": 1024, "crease": 50, "seed": 1, "rot": 0,
-            "height_cm": 0, "export_sources": False}
+            "height_cm": 0, "export_sources": False,
+            "views_engine": "qwen", "wear": "keep", "t2i_model": "klein"}
 os.makedirs(PROPS, exist_ok=True)
 sys.path.insert(0, TOOLS)
 import llm  # noqa: E402 — описание пропа локальной моделью (LM Studio, GPU через очередь)
@@ -126,24 +127,51 @@ def run_logged(pid, step, cmd):
         raise RuntimeError(tail)
 
 
-def build_prompt(pid, notes, local_ok=True):
+def build_prompt(pid, notes, local_ok=True, kind="edit"):
     """Заметка → английский промпт. Сначала OpenAI (секунды, без видеокарты, копейки), иначе локальная Gemma —
-    её можно звать только из очереди задач (она забирает видеокарту у Comfy)."""
+    её можно звать только из очереди задач (она забирает видеокарту у Comfy).
+    kind: edit — подпись предмета для перерисовки кадра (поле desc); t2i — исчерпывающий промпт «по тексту» (поле t2i)."""
     crop = pdir(pid, "crop.png")
     t0 = time.time()
     try:
         if not llm_openai.available():
             raise RuntimeError("нет ключа или исчерпан дневной лимит")
-        en, info = llm_openai.describe(notes, crop)
+        en, info = llm_openai.describe(notes, crop, kind=kind)
         engine = f"{info['model']}" + (" · из кэша" if info.get("cached") else f" · ${info['usd']:.5f}")
     except Exception as e:  # noqa: BLE001
         if not local_ok or config.get("llm_mode") not in ("auto", "local"):
             raise
-        en, engine = llm.describe(notes, crop), f"{config.get('local_model')} локально (OpenAI: {str(e)[:80]})"
+        en, engine = llm.describe(notes, crop, kind=kind), f"{config.get('local_model')} локально (OpenAI: {str(e)[:80]})"
     os.makedirs(pdir(pid, "logs"), exist_ok=True)
     with open(pdir(pid, "logs", "views.log"), "a", encoding="utf-8") as f:
-        f.write(f"\n[промпт {time.time() - t0:.0f} с, {engine}] {notes}\n  -> {en}\n")
+        f.write(f"\n[промпт{' t2i' if kind == 't2i' else ''} {time.time() - t0:.0f} с, {engine}] {notes}\n  -> {en}\n")
     return en, engine
+
+
+def prompt_kind(m):
+    """Какой промпт нужен пропу сейчас: в режиме «по тексту» — t2i, иначе подпись для перерисовки кадра."""
+    p = m["params"]
+    return "t2i" if p.get("mode") != "multiview" and p.get("single_src") == "text" else "edit"
+
+
+def t2i_prompt(m):
+    """Промпт для генерации с нуля — по-английски. Пусто или по-русски → собрать из заметки (мы в очереди — можно локально)."""
+    t = m.get("t2i") or ""
+    if t and not llm.has_cyrillic(t):
+        return t
+    notes = m.get("notes") or m.get("desc") or t
+    if config.get("llm_mode") == "off":
+        if notes and not llm.has_cyrillic(notes):  # английская заметка — сама себе промпт, допишем только кадр
+            return llm.t2i_finish(notes, notes)
+        raise RuntimeError("режим «по тексту»: текстовая модель выключена — напиши описание по-английски")
+    en, engine = build_prompt(m["id"], notes, kind="t2i")
+
+    def fn(mm):
+        mm["notes"] = mm.get("notes") or notes
+        mm["t2i"] = en
+        mm["t2i_engine"] = engine
+    update(m["id"], fn)
+    return en
 
 
 def english_desc(m):
@@ -167,13 +195,25 @@ def english_desc(m):
 def step_views(m, task):
     pid, p = m["id"], m["params"]
     os.makedirs(pdir(pid, "logs"), exist_ok=True)
-    desc = english_desc(m)
+    only = task.get("view")  # перегенерировать один вид
+    text = prompt_kind(m) == "t2i" and only in (None, "front")
+    # «по тексту» desc не нужен — не тратим на него запрос к модели
+    desc = "" if text else english_desc(m)
     vdir = pdir(pid, "views")
     os.makedirs(vdir, exist_ok=True)
-    only = task.get("view")  # перегенерировать один вид
     seed = int(task.get("seed") or p["seed"])
     tmp = pdir(pid, "views_tmp")
     shutil.rmtree(tmp, ignore_errors=True)
+    if text:
+        # Klein (или Krea-2, если она есть в ComfyUI) без опорной картинки рисует предмет с нуля; разворотов здесь нет
+        engine = "krea2" if p.get("t2i_model") == "krea2" else "t2i"
+        cmd = [PY, os.path.join(TOOLS, "views.py"), "--engine", engine, "--prompt", t2i_prompt(m), "--views", "",
+               "--out", tmp, "--seed", str(seed), "--tag", f"propgen/{pid}"]
+        run_logged(pid, "views", cmd)
+        if os.path.exists(os.path.join(tmp, "front.png")):
+            shutil.copy(os.path.join(tmp, "front.png"), os.path.join(vdir, "front.png"))
+        shutil.rmtree(tmp, ignore_errors=True)
+        return
     if only in (None, "front"):
         views = "" if only == "front" else "left,back,right"
         cmd = [PY, os.path.join(TOOLS, "views.py"), "--img", pdir(pid, "crop.png"), "--views", views]
@@ -181,6 +221,7 @@ def step_views(m, task):
         if not os.path.exists(os.path.join(vdir, "front.png")):
             raise RuntimeError("сначала нужен фронт")
         cmd = [PY, os.path.join(TOOLS, "views.py"), "--front", os.path.join(vdir, "front.png"), "--views", only]
+    cmd += ["--engine", p.get("views_engine", "qwen"), "--wear", p.get("wear", "keep")]
     cmd += ["--out", tmp, "--desc", desc or "object", "--seed", str(seed), "--tag", f"propgen/{pid}"]
     run_logged(pid, "views", cmd)
     for v in VIEWS:
@@ -208,7 +249,7 @@ def step_mesh(m, task):
             shutil.copy(pdir(pid, "views", v + ".png"), os.path.join(sel, v + ".png"))
         cmd += ["--views", sel]
     else:
-        src = pdir(pid, "views", "front.png") if p.get("single_src") == "front" else pdir(pid, "crop.png")
+        src = pdir(pid, "views", "front.png") if p.get("single_src") in ("front", "text") else pdir(pid, "crop.png")
         cmd += ["--img", src, "--model", p.get("model", "trellis2")]
     run_logged(pid, "mesh", cmd)
     swap(pid, "mesh")
@@ -243,12 +284,14 @@ def step_lowpoly(m, task):
 
 def step_describe(m, task):
     notes = task.get("notes") or m.get("notes") or m.get("desc") or ""
-    en, engine = build_prompt(m["id"], notes)
+    kind = task.get("kind") or prompt_kind(m)
+    en, engine = build_prompt(m["id"], notes, kind=kind)
+    field = "t2i" if kind == "t2i" else "desc"
 
     def fn(mm):
         mm["notes"] = notes  # заметка пользователя — как есть, не перезаписывается переводом
-        mm["desc"] = en
-        mm["desc_engine"] = engine
+        mm[field] = en
+        mm[field + "_engine"] = engine
     update(m["id"], fn)
 
 
@@ -347,7 +390,7 @@ async def add_photos(pid: str, files: list[UploadFile] = File(...)):
 @app.patch("/api/props/{pid}")
 def patch_prop(pid: str, body: dict):
     def fn(m):
-        for k in ("name", "desc", "notes"):
+        for k in ("name", "desc", "notes", "t2i"):
             if k in body:
                 m[k] = body[k]
         if "params" in body:
@@ -407,12 +450,16 @@ def run(pid: str, body: dict):
         (step in ("mesh", "from_mesh") and p["mode"] != "multiview" and p.get("single_src") == "crop")
     if needs_crop and not m.get("cropped") and not body.get("force"):
         raise HTTPException(409, "кадр не выделен")
+    # Krea-2 не качаем: если её нет в ComfyUI, лучше сказать сразу, чем после промпта и ожидания в очереди
+    if step in ("all", "views") and body.get("view") in (None, "front") and prompt_kind(m) == "t2i" \
+            and p.get("t2i_model") == "krea2" and not doctor.krea_files():
+        raise HTTPException(409, "Krea-2 не найдена в ComfyUI — выберите Klein или скачайте группу «krea» в настройках")
     if step in CHAIN:
         steps = [{"step": s} for s in CHAIN[step]]
         p = load(pid)["params"]
         if step == "all" and p["mode"] != "multiview":
-            # одно фото: виды не нужны, а для «чистого фронта» — только он
-            steps = ([{"step": "views", "view": "front"}] if p.get("single_src") == "front" else []) + steps[1:]
+            # одно фото: виды не нужны, а для «чистого фронта» и «по тексту» — только фронт
+            steps = ([{"step": "views", "view": "front"}] if p.get("single_src") in ("front", "text") else []) + steps[1:]
         then = [dict(s, chain=chain) for s in steps[1:]]
         enqueue(pid, steps[0]["step"], view=steps[0].get("view"), chain=chain, then=then)
     elif step in STEPS:
@@ -428,13 +475,16 @@ def describe(pid: str, body: dict):
     нет ключа, сети или лимита — локальная Gemma шагом очереди."""
     m = load(pid)
     notes = (body.get("notes") if body.get("notes") is not None else (m.get("notes") or m.get("desc"))) or ""
+    # в режиме «по тексту» кнопка строит исчерпывающий t2i-промпт и пишет его в своё поле, desc не трогает
+    kind = body.get("kind") if body.get("kind") in ("edit", "t2i") else prompt_kind(m)
+    field = "t2i" if kind == "t2i" else "desc"
     if llm_openai.available():
         update(pid, lambda mm: mm["steps"].__setitem__("describe", {"status": "running", "started": time.time()}))
         try:
-            en, engine = build_prompt(pid, notes, local_ok=False)
+            en, engine = build_prompt(pid, notes, local_ok=False, kind=kind)
 
             def fn(mm):
-                mm["notes"], mm["desc"], mm["desc_engine"] = notes, en, engine
+                mm["notes"], mm[field], mm[field + "_engine"] = notes, en, engine
                 mm["steps"]["describe"] = {"status": "done", "started": mm["steps"]["describe"].get("started"),
                                            "finished": time.time(), "engine": engine}
             return public(update(pid, fn))
@@ -445,7 +495,7 @@ def describe(pid: str, body: dict):
         raise HTTPException(400, "текстовая модель выключена в настройках")
     if mode == "openai":
         raise HTTPException(503, "OpenAI недоступен: нет ключа, сети или исчерпан дневной лимит — см. настройки")
-    enqueue(pid, "describe", notes=notes)
+    enqueue(pid, "describe", notes=notes, kind=kind)
     return public(load(pid))
 
 
@@ -532,6 +582,89 @@ def export_prop(pid: str, body: dict):
     return {**info, "url": f"/files/{pid}/{rel}?t={int(os.path.getmtime(zpath))}"}
 
 
+# ---------- версия и самообновление из git
+
+STARTED = time.time()
+
+
+def _git(*args, timeout=60):
+    r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=timeout, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return r.returncode, r.stdout.rstrip(), r.stderr.strip()  # слева не режем: у git status формат « M файл»
+
+
+def _commits(rng):
+    out = _git("log", "--format=%h\x1f%cI\x1f%s", rng)[1]
+    return [dict(zip(("hash", "date", "subject"), l.split("\x1f"))) for l in out.splitlines() if l]
+
+
+@app.get("/api/version")
+def version():
+    head = _git("rev-parse", "--short", "HEAD")[1] if os.path.isdir(os.path.join(ROOT, ".git")) else ""
+    return {"head": head, "started": STARTED}
+
+
+@app.get("/api/update")
+def update_info(fetch: int = 0):
+    """Есть ли новые коммиты в репозитории. fetch=1 — сначала спросить GitHub (несколько секунд)."""
+    if not os.path.isdir(os.path.join(ROOT, ".git")) or not shutil.which("git"):
+        return {"git": False}
+    res = {"git": True}
+    if fetch:
+        rc, _, err = _git("fetch", "--quiet", timeout=90)
+        if rc:
+            res["fetch_error"] = err[-400:]
+    res["branch"] = _git("rev-parse", "--abbrev-ref", "HEAD")[1]
+    res["head"] = (_commits("-1") or [{}])[0]
+    rc, up, _ = _git("rev-parse", "--abbrev-ref", "@{u}")
+    res["upstream"] = up if rc == 0 else None
+    if res["upstream"]:
+        res["behind"] = _commits("HEAD..@{u}")
+        res["ahead"] = len(_commits("@{u}..HEAD"))
+    else:
+        res["behind"], res["ahead"] = [], 0
+    res["dirty"] = [l[3:] for l in _git("status", "--porcelain", "--untracked-files=no")[1].splitlines()]
+    return res
+
+
+def _restart():
+    """start.cmd перезапускает сервер по коду 3; иначе — помощник, который дождётся порта и запустит нас заново."""
+    if os.environ.get("PROPGEN_SUPERVISED") == "1":
+        os._exit(3)
+    flags = (getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+             | getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    subprocess.Popen([sys.executable, os.path.join(TOOLS, "restart.py"), str(int(os.environ.get("PORT") or config.get("port"))),
+                      sys.executable, os.path.join(ROOT, "server.py")], cwd=ROOT, creationflags=flags, close_fds=True)
+    os._exit(0)
+
+
+@app.post("/api/update")
+def do_update():
+    """git pull --ff-only → при изменении requirements.txt — pip install → перезапуск сервера."""
+    info = update_info(fetch=1)
+    if not info["git"]:
+        raise HTTPException(400, "propgen установлен не через git — скачай новую версию с GitHub вручную")
+    with lock:
+        if state["current"] or state["queued"]:
+            raise HTTPException(409, "идёт задача — обнови, когда очередь опустеет")
+    if info["dirty"]:
+        raise HTTPException(409, "в файлах есть локальные правки, обновление их затрёт: " + ", ".join(info["dirty"][:8]))
+    if not info["behind"]:
+        return {"updated": False, **info}
+    req = os.path.join(ROOT, "requirements.txt")
+    before = open(req, "rb").read() if os.path.exists(req) else b""
+    rc, out, err = _git("pull", "--ff-only", timeout=180)
+    if rc:
+        raise HTTPException(500, "git pull не прошёл: " + (err or out)[-600:])
+    pip = None
+    if os.path.exists(req) and open(req, "rb").read() != before:  # новые зависимости — до перезапуска
+        r = subprocess.run([sys.executable, "-m", "pip", "install", "-r", req], cwd=ROOT, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=1800, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        pip = "ok" if r.returncode == 0 else (r.stdout + r.stderr)[-800:]
+    threading.Timer(1.0, _restart).start()
+    return {"updated": True, "pulled": len(info["behind"]), "pip": pip, "restarting": True}
+
+
 # ---------- настройки и проверка окружения
 
 def _mask(k):
@@ -584,6 +717,12 @@ def test_openai(body: dict):
 @app.get("/api/doctor")
 def get_doctor():
     return doctor.check_all()
+
+
+@app.get("/api/engines")
+def get_engines():
+    """Какие необязательные движки есть в ComfyUI прямо сейчас (быстро — без полного /api/doctor)."""
+    return {"krea2": doctor.krea_files()}
 
 
 @app.post("/api/doctor/download")

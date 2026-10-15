@@ -53,7 +53,7 @@ async function select(id) {
   $("#runAll").disabled = false;
   for (const inp of $$("[data-f]")) inp.value = cur[inp.dataset.f] || "";
   for (const inp of $$("[data-p]")) {
-    const v = cur.params[inp.dataset.p] ?? { single_src: "front", rot: 0 }[inp.dataset.p] ?? "";
+    const v = cur.params[inp.dataset.p] ?? { single_src: "front", rot: 0, views_engine: "qwen", wear: "keep", t2i_model: "klein" }[inp.dataset.p] ?? "";
     if (inp.type === "checkbox") inp.checked = !!v; else inp.value = inp.dataset.p === "height_cm" && !v ? "" : v;
   }
   setVmode(cur.params);
@@ -92,7 +92,7 @@ for (const inp of $$("[data-f]")) inp.onchange = () => patch({ [inp.dataset.f]: 
 for (const inp of $$("[data-p]")) {
   inp.oninput = showParams;
   inp.onchange = () => patch({ params: { [inp.dataset.p]: inp.type === "checkbox" ? inp.checked
-    : ["model", "single_src"].includes(inp.dataset.p) ? inp.value : +inp.value } });
+    : ["model", "single_src", "views_engine", "wear", "t2i_model"].includes(inp.dataset.p) ? inp.value : +inp.value } });
 }
 $("#exportBtn").onclick = async () => {
   if (!cur) return;
@@ -112,7 +112,9 @@ $("#describeBtn").onclick = async () => {
   const b = $("#describeBtn");
   b.disabled = true; b.classList.add("busy"); b.textContent = "✨ перевожу…";  // OpenAI отвечает за пару секунд прямо в запросе
   try {
-    cur = await api(`/api/props/${cur.id}/describe`, json("POST", { notes: $("[data-f=notes]").value }));
+    // в режиме «по тексту» — исчерпывающее описание для генерации с нуля (поле t2i), иначе промпт перерисовки (desc)
+    const kind = vmodeOf(cur.params) === "text" ? "t2i" : "edit";
+    cur = await api(`/api/props/${cur.id}/describe`, json("POST", { notes: $("[data-f=notes]").value, kind }));
     render(cur); poll(); healthAt = 0;
   } catch (e) { alert(e.message); render(cur); }
 };
@@ -120,10 +122,16 @@ function renderDescribe(m) {
   const b = $("#describeBtn"), st = m.steps.describe, on = busy(m, "describe");
   b.disabled = on; b.classList.toggle("busy", on);
   b.textContent = on ? (st.status === "queued" ? "✨ в очереди…" : "✨ перевожу…") : st?.status === "error" ? "✨ ошибка — ещё раз" : "✨ Из заметки";
+  const text = vmodeOf(m.params) === "text";  // «по тексту» — своё поле промпта: desc не затирается и пригодится в других режимах
+  $("[data-f=desc]").hidden = text;
+  $("[data-f=t2i]").hidden = !text;
+  $("#descLabel").textContent = text ? "Описание для генерации с нуля (EN)" : "Промпт для генератора (EN)";
+  const eng = text ? m.t2i_engine : m.desc_engine;
   b.title = st?.status === "error" ? st.error || ""
-    : "Перевести заметку целиком и дополнить деталями с кадра (OpenAI, без ключа — локальная Gemma)" +
-      (m.desc_engine ? `\nПоследний раз: ${m.desc_engine}` : "");
-  for (const k of ["notes", "desc"]) {  // поле, которое сейчас правят, не трогаем
+    : (text ? "Описать предмет с кадра исчерпывающе — форма, число деталей, материалы, износ — с переводом заметки"
+      : "Перевести заметку целиком и дополнить деталями с кадра") + " (OpenAI, без ключа — локальная Gemma)" +
+      (eng ? `\nПоследний раз: ${eng}` : "");
+  for (const k of ["notes", "desc", "t2i"]) {  // поле, которое сейчас правят, не трогаем
     const ta = $(`[data-f=${k}]`);
     if (document.activeElement !== ta && ta.value !== (m[k] || "")) ta.value = m[k] || "";
   }
@@ -186,8 +194,21 @@ const VMODE = {
   front: { params: { mode: "single", single_src: "front" }, hint: "Qwen перерисует предмет чистым фронтом — лучшее для 3D." },
   multi: { params: { mode: "multiview" }, hint: "Фронт и 3 разворота → Pixal3D. Дольше; хорош со своими фото сбоку и сзади." },
   none: { params: { mode: "single", single_src: "crop" }, hint: "3D прямо по кадру: быстрее, но тени и блики уйдут в текстуру." },
+  // по тексту: модель описывает предмет словами, Klein рисует его с нуля — фото в генератор не попадает вовсе
+  text: { params: { mode: "single", single_src: "text" }, hint: "Модель опишет предмет, Klein или Krea-2 нарисует его с нуля — для простых вещей: паллеты, ящики, бочки." },
 };
-const vmodeOf = p => p.mode === "multiview" ? "multi" : p.single_src === "crop" ? "none" : "front";
+// Krea-2 — необязательная модель: пункт доступен, только если её файлы есть в ComfyUI (проверка — при открытии режима «по тексту»)
+let kreaChecked = 0;
+async function checkKrea() {
+  if (Date.now() - kreaChecked < 60000) return;
+  kreaChecked = Date.now();
+  const f = await api("/api/engines").then(r => r.krea2).catch(() => null);
+  const o = $("[data-p=t2i_model] option[value=krea2]");
+  o.disabled = !f;
+  o.textContent = f ? "Krea-2 Turbo · 8 шагов" : "Krea-2 · нет в ComfyUI";
+  o.title = f ? `${f.unet}, ${f.clip}` : "Скачайте группу «krea» в Настройки → Проверка системы (~12 ГБ) или положите свои веса Krea-2 в папки ComfyUI";
+}
+const vmodeOf = p => p.mode === "multiview" ? "multi" : p.single_src === "crop" ? "none" : p.single_src === "text" ? "text" : "front";
 function setVmode(p) {
   const v = vmodeOf(p);
   for (const r of $$("input[name=vmode]")) r.checked = r.value === v;
@@ -216,8 +237,15 @@ function renderPipeline(m) {
     el.classList.toggle("done", st.status === "done");
     el.classList.toggle("skip", s === "views" && v === "none");
   }
-  $("[data-sub=views]").textContent = { front: "· фронт", multi: "· 4 вида", none: "· не нужны" }[v];
+  $("[data-sub=views]").textContent = { front: "· фронт", multi: "· 4 вида", none: "· не нужны", text: "· по тексту" }[v];
   $("[data-sub=mesh]").textContent = v === "multi" ? "· Pixal3D multiview" : "";
+  // по кадру фронт не генерируется; по тексту — своя модель (Klein или Krea-2), а износ описан в самом промпте
+  $("#frontOpts").hidden = v === "none" || v === "text";
+  $("#textOpts").hidden = v !== "text";
+  if (v === "text") {
+    checkKrea();
+    $("[data-sub=views]").textContent += m.params.t2i_model === "krea2" ? " · Krea-2" : " · Klein";
+  } else if (v !== "none") $("[data-sub=views]").textContent += m.params.views_engine === "klein" ? " · Klein" : " · Qwen";
   $("[data-p=model]").hidden = v === "multi";
   $("#meshFixed").hidden = v !== "multi";
 }
@@ -267,7 +295,7 @@ function render(m) {
     const v = c.dataset.v, src = f.views[v], box = $(".img", c);
     if (src && box.dataset.src !== src) { box.dataset.src = src; box.innerHTML = `<img src="${file(m, src)}" alt="">`; }
     $("input[type=checkbox]", c).checked = m.use_views[v] !== false;
-    const used = multi || (v === "front" && m.params.single_src === "front");
+    const used = multi || (v === "front" && ["front", "text"].includes(m.params.single_src));
     c.classList.toggle("off", m.use_views[v] === false || !used);
     const st = m.steps.views;
     c.classList.toggle("busy", busy(m, "views") && (!st.view || st.view === v));
@@ -934,19 +962,37 @@ $("#views").addEventListener("click", e => {
 $("#cropImg").addEventListener("click", () => cur?.files.crop && openViewer([{ src: file(cur, cur.files.crop), label: "кадр" }], 0));
 
 // ================= настройки и проверка системы
+// Окно в две панели: слева разделы с точкой-состоянием (по /api/doctor и проверке обновлений), справа — один раздел.
+// Поля всех разделов живут в одном диалоге, поэтому «Сохранить» по-прежнему сохраняет всё разом.
 
 const setDlg = $("#setDlg");
-let settings = null;
+let settings = null, setSec = "system";
 const MODE_HINT = {
   auto: "OpenAI, если есть ключ (секунды, ~$0.0003 за проп); иначе — локальная модель через LM Studio.",
   openai: "Только OpenAI. Без ключа или сверх дневного лимита заметка не переводится.",
   local: "Только LM Studio на этой машине: бесплатно, без интернета, ~10 с, ненадолго занимает видеокарту.",
   off: "Без текстовой модели: генератор получит заметку как есть — пиши её сразу по-английски.",
 };
-async function openSettings(note = "") {
+function showSec(sec) {
+  if (!$(`#setNav [data-sec="${sec}"]`)) sec = "system";
+  setSec = sec;
+  $$("#setNav [data-sec]").forEach(b => b.classList.toggle("on", b.dataset.sec === sec));
+  $$("#setDlg .set-sec").forEach(s => s.hidden = s.dataset.sec !== sec);
+  $("#setPane").scrollTop = 0;
+}
+$$("#setNav [data-sec]").forEach(b => b.onclick = () => showSec(b.dataset.sec));
+const SDOT_TITLE = { ok: "всё в порядке", bad: "нужно поправить", opt: "чего-то необязательного нет", new: "есть новая версия" };
+function setDot(sec, state = "") {
+  const d = $(`#setNav [data-sec="${sec}"] .sdot`);
+  d.className = "sdot " + state; d.title = SDOT_TITLE[state] || "";
+}
+// sec — раздел: "system" · "llm" · "apps" · "update"; без него откроется тот, что смотрели в прошлый раз
+async function openSettings(note = "", sec = "") {
   $("#setNote").textContent = note;
-  if (!setDlg.open) setDlg.showModal();
-  await loadSettings();
+  showSec(sec || setSec);
+  if (!setDlg.open) { setDlg.showModal(); document.activeElement?.blur(); }  // без кольца фокуса на ✕ при открытии
+  checkUpdate(0);  // версия и новые коммиты по уже скачанным ссылкам — мгновенно, без похода на GitHub
+  try { await loadSettings(); } catch (e) { $("#saveState").textContent = "✗ настройки не загрузились: " + e.message; }
   runDoctor();
 }
 async function loadSettings() {
@@ -965,7 +1011,9 @@ $("#setClose").onclick = () => setDlg.close();
 $("#keyEye").onclick = () => { const k = $("[data-c=openai_key]"); k.type = k.type === "password" ? "text" : "password"; };
 $("#keyTest").onclick = async () => {
   $("#keyState").textContent = "проверяю…";
-  const r = await api("/api/settings/test_openai", json("POST", { key: $("[data-c=openai_key]").value, model: $("[data-c=openai_model]").value }));
+  let r;
+  try { r = await api("/api/settings/test_openai", json("POST", { key: $("[data-c=openai_key]").value, model: $("[data-c=openai_model]").value })); }
+  catch (e) { r = { ok: false, error: e.message }; }
   $("#keyState").textContent = r.ok ? `✓ ключ работает, модель ${r.model} доступна` : "✗ " + r.error;
 };
 $("#setSave").onclick = async () => {
@@ -979,46 +1027,136 @@ $("#setSave").onclick = async () => {
   } catch (e) { alert(e.message); }
 };
 
+// строка проверки: подробность — одной строкой (целиком во всплывающей подсказке), у ошибок переносится —
+// там написано, что поправить
 const chkRow = (state, title, detail = "", btn = "") =>
-  `<div class="chk ${state}"><span class="ic">${state === "ok" ? "✓" : state === "bad" ? "✗" : "○"}</span>` +
-  `<div><div class="t">${title}</div>${detail ? `<div class="d">${detail}</div>` : ""}</div>${btn}</div>`;
+  `<div class="chk ${state}"><span class="ic">${state === "ok" ? "✓" : state === "bad" ? "✕" : "○"}</span>` +
+  `<div class="tx"><div class="t">${title}</div>${detail ? `<div class="d" title="${detail}">${detail}</div>` : ""}</div>${btn}</div>`;
+const goBtn = (sec, text) => `<button class="small" data-go="${sec}">${text}</button>`;
 const esc = t => String(t ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 let lastDoctor = null;
 async function runDoctor() {
   $("#checks").innerHTML = '<div class="hint">проверяю…</div>';
   let r;
-  try { r = lastDoctor = await api("/api/doctor"); } catch (e) { $("#checks").innerHTML = chkRow("bad", "Сервер propgen не ответил", esc(e.message)); return; }
-  const c = r.comfy, rows = [];
-  rows.push(c.ok ? chkRow("ok", `ComfyUI ${esc(c.version)}`, `${esc(c.gpu)} · ${c.vram_gb} ГБ видеопамяти · ${c.ram_gb} ГБ RAM`)
-    : chkRow("bad", "ComfyUI не отвечает", esc(c.error) + "\nЗапусти ComfyUI (Desktop или portable) и проверь адрес в настройках ниже."));
+  try { r = lastDoctor = await api("/api/doctor"); } catch (e) {
+    $("#checks").innerHTML = chkRow("bad", "Сервер propgen не ответил", esc(e.message)); setDot("system", "bad"); return;
+  }
+  // r.steps появились вместе с цепочкой; сервер со старым doctor (ещё не перезапущен) — прежний плоский список
+  const states = r.steps ? workflow(r) : flatChecks(r);
+  $$("#checks [data-dl]").forEach(btn => btn.onclick = () => startDownload(btn.dataset.dl.split(",")));
+  $$("#checks [data-go]").forEach(btn => btn.onclick = () => showSec(btn.dataset.go));
+  $("#settingsBtn").classList.toggle("alert", !setupReady(r));
+  // точки в навигации: «Система» — худшее из проверок, остальные — по своим программам
+  const l = r.llm;
+  setDot("system", states.includes("bad") ? "bad" : states.includes("opt") ? "opt" : "ok");
+  setDot("llm", l.mode === "off" ? "" : l.ok ? "ok" : "bad");
+  setDot("apps", r.comfy.ok && r.blender.ok ? "ok" : "bad");
+}
+
+// ---- проверка системы цепочкой: итог «минимальный набор», основа (ComfyUI, Python), шаги конвейера с вариантами
+// (что на шаге используется и чего не хватает), просмотрщик. Данные готовит tools/doctor.py → steps, minimum.
+const gbTxt = gb => gb.toFixed(1).replace(".", ",");
+function workflow(r) {
+  const c = r.comfy, py = r.python, h = r.hdri, min = r.minimum, states = [];
+  const coreGb = c.ok ? c.models.filter(m => m.group === "core" && !m.ok).reduce((a, m) => a + m.gb, 0) : 0;
+  let html = min.ok
+    ? '<div class="wf-sum ok"><span class="ic">✓</span><div><b>Минимальный набор на месте</b>' +
+      "<small>ComfyUI с нодами · модели основного пути · Blender · Python — конвейер поедет</small></div></div>"
+    : `<div class="wf-sum bad"><span class="ic">✕</span><div><b>Не хватает минимального набора</b>` +
+      `<small title="${esc(min.missing.join(" · "))}">${esc(min.missing.join(" · "))}</small></div>` +
+      (min.download.length ? `<button class="small primary" data-dl="${min.download.join(",")}">Скачать ${gbTxt(coreGb)} ГБ</button>` : "") + "</div>";
+  states.push(min.ok ? "ok" : "bad");
+
+  // основа: ComfyUI (через него идут фронт и 3D) и Python-зависимости сервера
+  const base = [];
+  if (!c.ok) base.push(chkRow("bad", "ComfyUI не отвечает",
+    esc(c.error) + "\nЗапусти ComfyUI (Desktop или portable) и проверь адрес в разделе «ComfyUI и Blender».", goBtn("apps", "Адрес")));
+  else {
+    const noNode = c.nodes.filter(n => !n.ok), gguf = c.nodes.find(n => n.name === "UnetLoaderGGUF");
+    base.push(chkRow(noNode.length ? "bad" : "ok", `ComfyUI ${esc(c.version)}`,
+      noNode.length ? `нет нод: ${noNode.map(n => esc(n.name)).join(", ")}\n${esc(noNode[0].fix)}`
+        // имя устройства у ComfyUI вида «cuda:0 NVIDIA … : cudaMallocAsync» — служебные хвосты не нужны
+        : `${esc(c.url)} · нода GGUF ${gguf?.ok ? "есть" : "нет"} · ${esc(String(c.gpu || "").replace(/^\w+:\d+\s+/, "").replace(/\s+:\s+\w+$/, ""))} · ${c.vram_gb} ГБ видеопамяти`));
+  }
+  base.push(py.ok ? chkRow("ok", "Python-зависимости", esc(py.python))
+    : chkRow("bad", "Python-зависимости", `нет: ${esc(py.missing.join(", "))} — запусти setup.cmd`));
+  html += '<div class="fg-h">Основа</div><div class="checks">' + base.join("") + "</div>";
+
+  // шаги: варианты — «таблетки» (✓ есть, ✕/○ нет, рамка — используется сейчас); под ними — чего не хватает и кнопка
+  html += '<div class="fg-h">Конвейер</div><div class="wf">' + r.steps.map((s, i) => {
+    states.push(s.state);
+    const chips = s.options.map(o => {
+      const cls = o.ok ? "ok" : s.state === "bad" ? "bad" : "no";
+      // в подсказке — реальные файлы (у ComfyUI может лежать другой вариант весов, чем в манифесте)
+      const tip = (o.ok ? "есть" + (o.files?.length ? ": " + o.files.join(", ") : "") : "не хватает: " + o.missing.join(", ")) +
+        (o.current ? " · используется сейчас" : "");
+      return `<span class="wf-o ${cls}${o.current ? " cur" : ""}" title="${esc(tip)}"><i>${o.ok ? "✓" : cls === "bad" ? "✕" : "○"}</i>` +
+        `${esc(o.title)}${o.current ? "<em>сейчас</em>" : ""}</span>`;
+    }).join("");
+    const act = o => o.gb > 0 ? `<button class="small${s.state === "bad" ? " primary" : ""}" data-dl="${o.download.join(",")}">Скачать ${gbTxt(o.gb)} ГБ</button>`
+      : o.manual.length ? '<span class="wf-manual">положи файлы в папку моделей ComfyUI</span>'
+      : s.id === "prompt" ? goBtn("llm", "Настроить")
+      : o.missing.some(m => m.startsWith("Blender")) ? goBtn("apps", "Указать путь") : "";
+    // у рабочего шага не шумим про чужие варианты — только если их можно докачать или подложить руками;
+    // без ComfyUI у всех его вариантов одна причина — она уже сказана в «Основе»
+    // если на шаге есть «используется сейчас» (промпт) — говорим только про него; одну и ту же загрузку не повторяем
+    const cur = s.options.find(o => o.current), seen = new Set();
+    const lines = s.options.filter(o => !o.ok && (s.state !== "ok" || o.gb > 0 || o.manual.length) && (!cur || o === cur) &&
+        !(o.missing.length === 1 && o.missing[0] === "ComfyUI не отвечает"))
+      .filter(o => { const k = o.gb > 0 && !o.manual.length ? o.download.join(",") : ""; if (k && seen.has(k)) return false; seen.add(k); return true; })
+      .map(o => `<div class="wf-m"><span class="d" title="${esc(o.missing.join(", "))}"><b>${esc(o.title)}</b> — ${esc(o.missing.join(", "))}</span>${act(o)}</div>`).join("");
+    return `<div class="wf-step ${s.state}"><i class="wf-n">${i + 1}</i><div class="wf-b">` +
+      `<div class="wf-h"><b>${esc(s.title)}</b><span>${esc(s.what)}${s.optional ? ' · <em class="wf-tag">необязательно</em>' : ""}</span></div>` +
+      `<div class="wf-r"><div class="wf-opts">${chips}</div>${lines}</div></div></div>`;
+  }).join("") + "</div>";
+
+  html += '<div class="fg-h">Просмотрщик</div><div class="checks">' +
+    chkRow(h.ok ? "ok" : "opt", "Панорамы 4k для фона — по желанию", `${h.have} из ${h.total}`, h.ok ? "" : '<button class="small" data-dl="hdri">Скачать ~80 МБ</button>') + "</div>";
+  states.push(h.ok ? "ok" : "opt");
+  $("#checks").innerHTML = html;
+  $("#checks").classList.add("wf-mode");
+  return states.map(s => s === "bad" && min.ok ? "opt" : s);  // при живом минимуме красного нет: остальное — по желанию
+}
+
+// прежний плоский список проверок — для сервера, ещё не знающего про steps
+function flatChecks(r) {
+  const c = r.comfy, rows = [], states = [];
+  const add = (state, ...a) => { states.push(state); rows.push(chkRow(state, ...a)); };
+  if (c.ok) add("ok", `ComfyUI ${esc(c.version)}`, `${esc(c.gpu)} · ${c.vram_gb} ГБ видеопамяти · ${c.ram_gb} ГБ RAM`);
+  else add("bad", "ComfyUI не отвечает", esc(c.error) + "\nЗапусти ComfyUI (Desktop или portable) и проверь адрес в разделе «ComfyUI и Blender».",
+    goBtn("apps", "Адрес"));
   if (c.ok) {
-    for (const n of c.nodes.filter(n => !n.ok)) rows.push(chkRow("bad", `Нет ноды ${esc(n.name)}`, esc(n.fix)));
+    for (const n of c.nodes.filter(n => !n.ok)) add("bad", `Нет ноды ${esc(n.name)}`, esc(n.fix));
     for (const [g, label] of Object.entries(r.groups)) {
       if (g === "hdri") continue;
       const ms = c.models.filter(m => m.group === g), miss = ms.filter(m => !m.ok);
       const gb = miss.reduce((a, m) => a + m.gb, 0);
       const must = g === "core";
-      rows.push(chkRow(miss.length ? (must ? "bad" : "opt") : "ok", `Модели: ${esc(label)}${must ? "" : " — по желанию"}`,
+      add(miss.length ? (must ? "bad" : "opt") : "ok", `Модели: ${esc(label)}${must ? "" : " — по желанию"}`,
         miss.length ? `нет ${miss.length} из ${ms.length}: ${miss.map(m => esc(m.file)).join(", ")}` : "все на месте",
-        miss.length ? `<button class="small${must ? " primary" : ""}" data-dl="${g}">Скачать ${gb.toFixed(1)} ГБ</button>` : ""));
+        miss.length ? `<button class="small${must ? " primary" : ""}" data-dl="${g}">Скачать ${gb.toFixed(1).replace(".", ",")} ГБ</button>` : "");
     }
   }
   const b = r.blender;
-  rows.push(b.ok ? chkRow("ok", `Blender ${esc(b.version)}`, esc(b.path)) : chkRow("bad", "Blender", esc(b.error) + (b.path ? "\n" + esc(b.path) : "")));
+  if (b.ok) add("ok", `Blender ${esc(b.version)}`, esc(b.path));
+  else add("bad", "Blender", esc(b.error) + (b.path ? "\n" + esc(b.path) : ""), goBtn("apps", "Указать путь"));
   const l = r.llm, mode = { auto: "авто", openai: "OpenAI", local: "локально", off: "выключена" }[l.mode];
-  rows.push(chkRow(l.ok ? "ok" : "bad", `Текстовая модель: ${mode}`,
+  add(l.ok ? "ok" : "bad", `Текстовая модель: ${mode}`,
     l.mode === "off" ? "заметки идут в генератор как есть" :
     [l.openai_key ? "ключ OpenAI есть" : "ключа OpenAI нет", l.lms ? (l.local_model_ok ? "локальная модель скачана" : "LM Studio есть, модель не скачана") : "LM Studio не установлен"].join(" · ") +
-    (l.ok ? "" : "\nВведи ключ OpenAI или установи LM Studio и скачай модель — в карточке «Текстовая модель».")));
+    (l.ok ? "" : "\nВведи ключ OpenAI или установи LM Studio и скачай модель — в разделе «Текстовая модель»."),
+    l.ok ? "" : goBtn("llm", "Настроить"));
   const py = r.python;
-  rows.push(py.ok ? chkRow("ok", "Python-зависимости", esc(py.python)) : chkRow("bad", "Python-зависимости", `нет: ${esc(py.missing.join(", "))} — запусти setup.cmd`));
+  if (py.ok) add("ok", "Python-зависимости", esc(py.python));
+  else add("bad", "Python-зависимости", `нет: ${esc(py.missing.join(", "))} — запусти setup.cmd`);
   const h = r.hdri;
-  rows.push(chkRow(h.ok ? "ok" : "opt", "Панорамы 4k для фона — по желанию", `${h.have}/${h.total}`, h.ok ? "" : '<button class="small" data-dl="hdri">Скачать ~80 МБ</button>'));
+  add(h.ok ? "ok" : "opt", "Панорамы 4k для фона — по желанию", `${h.have} из ${h.total}`, h.ok ? "" : '<button class="small" data-dl="hdri">Скачать ~80 МБ</button>');
   $("#checks").innerHTML = rows.join("");
-  $$("#checks [data-dl]").forEach(btn => btn.onclick = () => startDownload([btn.dataset.dl]));
-  $("#settingsBtn").classList.toggle("alert", !setupReady(r));
+  $("#checks").classList.remove("wf-mode");
+  return states;
 }
-const setupReady = r => r.comfy.ok && r.comfy.nodes.every(n => n.ok) && r.comfy.models.filter(m => m.group === "core").every(m => m.ok) && r.blender.ok && r.python.ok;
+const setupReady = r => r.minimum ? r.minimum.ok :
+  r.comfy.ok && r.comfy.nodes.every(n => n.ok) && r.comfy.models.filter(m => m.group === "core").every(m => m.ok) && r.blender.ok && r.python.ok;
 $("#docRun").onclick = runDoctor;
 
 async function startDownload(groups) {
@@ -1045,8 +1183,114 @@ $("#lmsGet").onclick = async () => {
   };
   tick();
 };
+// ---- обновление из репозитория
+// Новые коммиты видны в двух местах: плашка «Обновление · N» в заголовке окна (с поповером) и раздел «Обновление»
+// в настройках. Состояние общее — updInfo (последний ответ GET /api/update) и updRun (идущее обновление), обе кнопки
+// «Обновить и перезапустить» ведут в один runUpdate(), поэтому плашка и настройки не расходятся.
+const fmtDate = iso => iso ? new Date(iso).toLocaleString("ru", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
+const plural = (n, one, few, many) => { const a = n % 10, b = n % 100; return a === 1 && b !== 11 ? one : a >= 2 && a <= 4 && (b < 12 || b > 14) ? few : many; };
+const UPD_EVERY = 30 * 60 * 1000;                  // GitHub спрашиваем не чаще раза в 30 минут
+let updInfo = null, updAt = 0;                     // updAt — когда последний раз ходили на GitHub (fetch=1)
+const updRun = { busy: false, msg: "", err: "" };  // этап идущего обновления и текст отказа сервера
+const commitList = list => '<ul class="commits">' + list.map(c =>
+  `<li><code>${esc(c.hash)}</code><span class="s" title="${esc(c.subject)}">${esc(c.subject)}</span><span class="d">${esc(fmtDate(c.date))}</span></li>`).join("") + "</ul>";
+const dirtyNote = u => u.dirty?.length ? `<div class="upd-warn">⚠ Есть локальные правки — обновление их затрёт, поэтому сервер откажется обновляться: ${esc(u.dirty.join(", "))}</div>` : "";
+const runNote = () => (updRun.msg ? `<div class="upd-msg">${esc(updRun.msg)}</div>` : "") + (updRun.err ? `<div class="upd-err">✗ ${esc(updRun.err)}</div>` : "");
+
+function renderUpdate(u = updInfo) {
+  const box = $("#updBox"), go = $("#updGo");
+  go.hidden = true;
+  if (!u) return;
+  if (!u.git) {
+    box.innerHTML = '<div class="hint">propgen установлен не через git — новую версию скачай с GitHub вручную.</div>';
+    $("#navVer").textContent = "не через git"; setDot("update"); return;
+  }
+  const h = u.head || {}, behind = u.behind || [];
+  let html = `<div class="upd-cur"><span class="lbl">Установлена</span><div class="v"><code>${esc(h.hash)}</code><span>${esc(h.subject)}</span></div>` +
+    `<span class="hint">${esc(fmtDate(h.date))}${u.branch ? " · ветка " + esc(u.branch) : ""}</span></div>`;
+  if (u.fetch_error) html += `<div class="upd-warn">Не удалось спросить GitHub: ${esc(u.fetch_error)}</div>`;
+  if (!u.upstream) html += '<div class="hint">Ветка не связана с репозиторием на GitHub — обновляться неоткуда.</div>';
+  else if (!behind.length) html += '<div class="upd-ok">✓ Это последняя версия</div>';
+  else {
+    html += `<div class="fg-h">Новое · ${behind.length}</div>` + commitList(behind) + dirtyNote(u);
+    go.hidden = !!u.dirty?.length;
+  }
+  box.innerHTML = html + runNote();
+  if (updRun.busy) go.hidden = false;
+  go.disabled = updRun.busy;
+  go.textContent = updRun.busy ? "Обновляюсь…" : "Обновить и перезапустить";
+  $("#navVer").textContent = behind.length ? `новое: ${behind.length}` : h.hash ? "версия " + h.hash : "версия";
+  setDot("update", behind.length ? "new" : "");
+}
+
+// плашка в заголовке: видна, только если есть новые коммиты (или обновление уже идёт)
+const updPop = $("#updPop"), updBadge = $("#updBadge");
+function renderBadge(u = updInfo) {
+  const behind = u?.behind || [], n = behind.length;
+  $("#updWrap").hidden = !n && !updRun.busy;
+  if ($("#updWrap").hidden) closeUpdPop();
+  updBadge.classList.toggle("busy", updRun.busy);
+  $("#updBadgeTxt").textContent = updRun.busy ? "Обновляюсь…" : `Обновление · ${n}`;
+  updBadge.title = updRun.busy ? "Обновляю propgen — страница перезагрузится сама" : `Доступна новая версия propgen: ${n} ${plural(n, "новый коммит", "новых коммита", "новых коммитов")}`;
+  $("#updPopTitle").textContent = updRun.busy ? "Обновляю propgen…" : "Доступна новая версия";
+  $("#updPopSub").textContent = n ? `сейчас ${u.head?.hash || "?"} · ${n} ${plural(n, "новый коммит", "новых коммита", "новых коммитов")}` : "";
+  $("#updPopList").innerHTML = n ? commitList(behind) : "";
+  $("#updPopNote").innerHTML = (u ? dirtyNote(u) : "") + runNote();
+  const go = $("#updPopGo");
+  go.disabled = updRun.busy;
+  go.textContent = updRun.busy ? "Обновляюсь…" : "Обновить и перезапустить";
+}
+const renderUpd = () => { renderUpdate(); renderBadge(); };
+function closeUpdPop() { updPop.hidden = true; updBadge.setAttribute("aria-expanded", "false"); }
+updBadge.onclick = () => {
+  if (!updPop.hidden) return closeUpdPop();
+  renderBadge(); updPop.hidden = false; updBadge.setAttribute("aria-expanded", "true");
+};
+addEventListener("pointerdown", e => { if (!updPop.hidden && !e.target.closest("#updWrap")) closeUpdPop(); });
+addEventListener("keydown", e => { if (e.key === "Escape" && !updPop.hidden) closeUpdPop(); });
+$("#updPopMore").onclick = () => { closeUpdPop(); openSettings("", "update"); };
+
+// quiet — фоновая проверка: не трогать раздел настроек надписью «спрашиваю…» и молчать об ошибке сети
+async function checkUpdate(fetch = 1, quiet = false) {
+  if (fetch) updAt = Date.now();
+  if (fetch && !quiet && !updRun.busy) $("#updBox").innerHTML = '<div class="hint">спрашиваю GitHub…</div>';
+  try {
+    updInfo = await api(`/api/update?fetch=${fetch}`);
+    renderUpd();
+    return updInfo;
+  } catch (e) { if (!quiet && !updRun.busy) $("#updBox").innerHTML = `<div class="upd-err">✗ ${esc(e.message)}</div>`; }
+}
+$("#updCheck").onclick = () => checkUpdate(1);
+
+// git pull → перезапуск сервера → ждём, пока /api/version.started сменится, и перезагружаем страницу (свежий интерфейс).
+// Отказ сервера (409: идёт задача, локальные правки) показываем там же, где нажали — в поповере и в разделе.
+async function runUpdate() {
+  if (updRun.busy) return;
+  Object.assign(updRun, { busy: true, msg: "Скачиваю изменения…", err: "" }); renderUpd();
+  try {
+    const before = await api("/api/version");
+    const r = await api("/api/update", json("POST", {}));
+    if (!r.updated) { Object.assign(updRun, { busy: false, msg: "" }); updInfo = r; return renderUpd(); }
+    updRun.msg = `Скачано изменений: ${r.pulled}${r.pip && r.pip !== "ok" ? " · ⚠ pip: " + r.pip : ""}. Перезапускаюсь…`; renderUpd();
+    const t0 = Date.now();
+    const wait = async () => {
+      try { const v = await api("/api/version"); if (v.started !== before.started) return location.reload(); } catch {}
+      if (Date.now() - t0 < 60000) return setTimeout(wait, 1000);
+      Object.assign(updRun, { busy: false, err: "Сервер не поднялся за минуту — запусти start.cmd вручную." }); renderUpd();
+    };
+    setTimeout(wait, 1500);
+  } catch (e) { Object.assign(updRun, { busy: false, msg: "", err: e.message }); renderUpd(); }
+}
+$("#updGo").onclick = runUpdate;
+$("#updPopGo").onclick = runUpdate;
+
+// тихая проверка: через 4 с после запуска (не мешать первой загрузке), дальше — раз в 30 минут. Таймер тикает
+// раз в минуту и сверяется с updAt: ручная «Проверить» тоже сдвигает срок, а уснувшая вкладка догонит сразу.
+setTimeout(() => checkUpdate(1, true), 4000);
+setInterval(() => { if (!updRun.busy && Date.now() - updAt >= UPD_EVERY) checkUpdate(1, true); }, 60 * 1000);
+
 // первый запуск: если чего-то не хватает — сразу показать проверку
-api("/api/doctor").then(r => { if (!setupReady(r)) openSettings("Не всё готово к работе — ниже, что поправить."); else $("#settingsBtn").classList.remove("alert"); }).catch(() => {});
+api("/api/doctor").then(r => { if (!setupReady(r)) openSettings("Не всё готово к работе — вот что поправить.", "system"); else $("#settingsBtn").classList.remove("alert"); }).catch(() => {});
 
 enhance();  // свои выпадающие списки, ползунки и числовые поля
 setTab("crop");

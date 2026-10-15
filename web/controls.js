@@ -45,6 +45,7 @@ function enhanceSelect(sel) {
   sync();
 
   const choose = i => {
+    if (sel.options[i]?.disabled) return;  // недоступный пункт (например, модели нет) — видно, но не выбрать
     if (sel.selectedIndex !== i) {
       sel.selectedIndex = i;
       sync();
@@ -62,8 +63,9 @@ function enhanceSelect(sel) {
     menu.setAttribute("role", "listbox");
     [...sel.options].forEach((o, i) => {
       const it = document.createElement("div");
-      it.className = "ux-opt" + (i === sel.selectedIndex ? " on" : "");
+      it.className = "ux-opt" + (i === sel.selectedIndex ? " on" : "") + (o.disabled ? " off" : "");
       it.textContent = o.textContent;
+      it.title = o.title || "";
       it.onclick = () => choose(i);
       menu.append(it);
     });

@@ -5,7 +5,7 @@
 Qwen-Edit она отнимала у Comfy оперативку — тот уходил в своп. Qwen3.5-4B не годится: в LM Studio она «думает»
 и тратит весь лимит токенов на рассуждения, ответ пустой.
 
-python tools/llm.py --img crop.png --notes "ржавая стела с надписью ..." [--cpu]
+python tools/llm.py --img crop.png --notes "ржавая стела с надписью ..." [--cpu] [--kind t2i]
 """
 import argparse
 import base64
@@ -44,6 +44,34 @@ List appearance details NOT already stated in the description: shape, parts, mat
 Ignore everything else in the photo - other signs, trees, cars, buildings, people, ground, sky.
 Output one comma-separated phrase of 8-30 words, no full sentence, no preface. If there is nothing to add, output NONE.
 Do not say "game prop", "photo", "image", "background", "lighting" or "style"."""
+
+# Режим «по тексту»: генератор рисует предмет с нуля, фото он не видит — всё, что не сказано в промпте, он выдумает.
+# Поэтому описание исчерпывающее, а счёт повторяющихся частей — отдельным требованием: «стопка паллет» без числа
+# ярусов и досок превращается в случайную. Фраза о кадре дописывается кодом (T2I_FRAME) — дословно и без расхода токенов.
+T2I = """You write a prompt for a text-to-image model that must recreate ONE object from the photo from scratch, never seeing the photo.
+Describe that object exhaustively, so it can be redrawn from your words alone:
+what it is; overall shape and proportions; the EXACT number and arrangement of repeated parts (boards, slats, planks, tiers,
+layers, legs, blocks, rows) - count them carefully; construction and how the parts are joined; materials; colors;
+condition (wear, dirt, rust, damage) exactly as visible - add nothing that is not there.
+Text written on the object: verbatim in its original alphabet in double quotes, followed by its English meaning in parentheses.
+The user's notes are the truth: translate them into English completely and keep every detail; where the photo disagrees, follow the notes.
+Ignore everything around the object (ground, other objects, buildings, plants, sky, people).
+Do not mention the photo, the notes, the background, the camera or the lighting - that is added separately.
+60-140 words, one paragraph of plain English."""
+
+T2I_FRAME = ("Isolated on a plain pure white background, three-quarter view from slightly above, the whole object fully "
+             "visible and centered with some margin, soft even studio lighting, no shadows, photorealistic render.")
+
+
+def t2i_finish(text, notes=""):
+    """Описание предмета → готовый t2i-промпт: надписи из заметки — дословно (страховка), в конце — фраза о кадре."""
+    text = " ".join((text or "").split()).strip().rstrip(".")
+    if not text:
+        raise RuntimeError("модель вернула пустой ответ")
+    for q in re.findall(r'["«“]([^"»”]{2,})["»”]', notes or ""):
+        if q.lower() not in text.lower():
+            text += f', with the inscription "{q}"'
+    return text + ". " + T2I_FRAME
 
 
 def _req(path, data=None, timeout=300):
@@ -120,12 +148,21 @@ def _ask(notes, img):
     return text + "."
 
 
-def describe(notes="", img=None, gpu=True):
+def _ask_t2i(notes, img):
+    """Одна инструкция с картинкой: перевод заметки и описание по кадру — сразу абзацем t2i-промпта."""
+    content = [{"type": "text", "text": "Notes: " + ((notes or "").strip() or "(none - describe the main object)")}]
+    if img and os.path.exists(img):
+        content.insert(0, {"type": "image_url", "image_url": {"url": _image_url(img)}})
+    return t2i_finish(_chat(T2I, content, max_tokens=350), notes)
+
+
+def describe(notes="", img=None, gpu=True, kind="edit"):
+    """kind: edit — подпись предмета для перерисовки кадра; t2i — исчерпывающий промпт для генерации с нуля."""
     if gpu:
         free_comfy()
     load(gpu)
     try:
-        return _ask(notes, img)
+        return _ask_t2i(notes, img) if kind == "t2i" else _ask(notes, img)
     finally:
         unload()
 
@@ -139,7 +176,8 @@ if __name__ == "__main__":
     ap.add_argument("--img", default="")
     ap.add_argument("--notes", default="")
     ap.add_argument("--cpu", action="store_true")
+    ap.add_argument("--kind", default="edit", choices=["edit", "t2i"])
     a = ap.parse_args()
     t0 = time.time()
-    print(describe(a.notes, a.img or None, gpu=not a.cpu))
+    print(describe(a.notes, a.img or None, gpu=not a.cpu, kind=a.kind))
     print(f"[{time.time() - t0:.1f} s]")

@@ -19,6 +19,20 @@
     <div class="brand"><span class="logo"></span>propgen</div>
     <div class="crumb" id="crumb"></div>
     <div class="spacer"></div>
+    <!-- плашка «есть обновление»: видна, только когда на GitHub есть новые коммиты; клик — список и кнопка обновления -->
+    <div class="upd-wrap" id="updWrap" hidden>
+      <button class="upd-badge" id="updBadge" type="button" aria-haspopup="dialog" aria-expanded="false">
+        <svg viewBox="0 0 20 20"><path d="M10 3.5v9M6 8.5l4 4 4-4"/><path d="M4 16h12"/></svg><span id="updBadgeTxt">Обновление</span></button>
+      <div class="upd-pop" id="updPop" role="dialog" aria-label="Обновление propgen" hidden>
+        <div class="up-h"><b id="updPopTitle">Доступна новая версия</b><span class="hint" id="updPopSub"></span></div>
+        <div id="updPopList"></div>
+        <div id="updPopNote"></div>
+        <div class="up-foot">
+          <button class="ghost small" id="updPopMore" type="button">Подробнее</button><span class="spacer"></span>
+          <button class="primary small" id="updPopGo" type="button">Обновить и перезапустить</button>
+        </div>
+      </div>
+    </div>
     <div class="panel-toggles">
       <button class="icon" id="tglSide" title="Список пропов · Ctrl+B"><svg viewBox="0 0 20 16"><rect x="1" y="1" width="18" height="14" rx="3"/><rect class="f" x="1" y="1" width="6" height="14" rx="3"/></svg></button>
       <button class="icon" id="tglInsp" title="Инспектор · Ctrl+Alt+B"><svg viewBox="0 0 20 16"><rect x="1" y="1" width="18" height="14" rx="3"/><rect class="f" x="13" y="1" width="6" height="14" rx="3"/></svg></button>
@@ -127,9 +141,11 @@
           <button class="ghost danger small" data-act="delete" title="удалить проп со всеми файлами">Удалить</button></div>
         <label class="fl">Заметка — своими словами, можно по-русски
           <textarea data-f="notes" rows="2" placeholder="что это за предмет, что на нём написано и что это значит"></textarea></label>
-        <div class="desc-row"><span class="label">Промпт для генератора (EN)</span>
+        <div class="desc-row"><span class="label" id="descLabel">Промпт для генератора (EN)</span>
           <button class="small ghost magic" id="describeBtn" title="Перевести заметку целиком и дополнить деталями с кадра (Gemma-3-4B в LM Studio, ~10 с)">✨ Из заметки</button></div>
         <textarea data-f="desc" rows="2" placeholder="соберётся из заметки сам при запуске видов"></textarea>
+        <!-- режим «по тексту»: генератор не видит фото, поэтому описание исчерпывающее и длиннее -->
+        <textarea data-f="t2i" rows="5" placeholder="соберётся из заметки и кадра сам при запуске видов" hidden></textarea>
       </div>
 
       <div class="group pipeline" id="pipeline">
@@ -142,12 +158,20 @@
           <button class="ghost" data-log="views" title="лог шага">≡</button><span class="ps-run" data-runslot="views"></span>
         </div>
         <div class="ps-body">
-          <div class="seg three">
+          <div class="seg four vmodes">
             <label><input type="radio" name="vmode" value="front"><span>фронт</span></label>
             <label><input type="radio" name="vmode" value="multi"><span>4 вида</span></label>
             <label><input type="radio" name="vmode" value="none"><span>по кадру</span></label>
+            <label><input type="radio" name="vmode" value="text"><span>по тексту</span></label>
           </div>
           <p class="hint" id="vmodeHint"></p>
+          <div class="row2" id="frontOpts">
+            <label>Движок фронта<select data-p="views_engine"><option value="qwen">Qwen · качество</option><option value="klein">Klein · быстро</option></select></label>
+            <label>Износ<select data-p="wear"><option value="keep">сохранить</option><option value="clean">убрать</option></select></label>
+          </div>
+          <div class="row2" id="textOpts" hidden>
+            <label>Модель<select data-p="t2i_model"><option value="klein">Klein · быстро</option><option value="krea2">Krea-2 Turbo</option></select></label>
+          </div>
         </div>
         </div>
 
@@ -219,61 +243,99 @@
   </footer>
 </div>
 
-<!-- ===== настройки ===== -->
+<!-- ===== настройки: слева разделы с точкой-состоянием, справа — содержимое одного раздела ===== -->
 <dialog id="setDlg" class="settings">
   <div class="set-head">
     <h3>Настройки</h3>
-    <span class="hint" id="setNote"></span>
+    <span class="set-note" id="setNote"></span>
     <span class="spacer"></span>
     <button class="ghost small" id="setClose" title="Закрыть (Esc)">✕</button>
   </div>
-  <div class="set-body">
-    <section class="card wide">
-      <div class="card-h"><b>Проверка системы</b><span class="spacer"></span><button class="small" id="docRun">Проверить снова</button></div>
-      <div class="checks" id="checks"><div class="hint">проверяю…</div></div>
-      <div class="dl" id="dlBox" hidden>
-        <div class="dl-row"><span id="dlFile"></span><span class="spacer"></span><span id="dlNum"></span></div>
-        <i class="bar"><i id="dlBar"></i></i>
-      </div>
-    </section>
+  <div class="set-main">
+    <nav class="set-nav" id="setNav">
+      <button type="button" data-sec="system"><svg viewBox="0 0 20 20"><path d="M2 10.5h3.6l2.1-5.2 4.3 10 2.2-4.8H18"/></svg>
+        <span>Система<small>проверка и модели</small></span><i class="sdot"></i></button>
+      <button type="button" data-sec="llm"><svg viewBox="0 0 20 20"><path d="M3 4h14v9.5H9.2L5.5 16.5v-3H3z"/><path d="M6.5 7.6h7M6.5 10h4.5"/></svg>
+        <span>Текстовая модель<small>перевод заметок</small></span><i class="sdot"></i></button>
+      <button type="button" data-sec="apps"><svg viewBox="0 0 20 20"><path d="M10 2.5 16.5 6v8L10 17.5 3.5 14V6z"/><path d="M10 10v7.5M10 10l6.5-4M10 10 3.5 6"/></svg>
+        <span>ComfyUI и Blender<small>адреса и пути</small></span><i class="sdot"></i></button>
+      <button type="button" data-sec="update"><svg viewBox="0 0 20 20"><path d="M10 3.5v9M6 8.5l4 4 4-4"/><path d="M4 16h12"/></svg>
+        <span>Обновление<small id="navVer">версия</small></span><i class="sdot"></i></button>
+    </nav>
 
-    <section class="card">
-      <div class="card-h"><b>Текстовая модель</b></div>
-      <p class="hint">Переводит заметку и дописывает детали с кадра для генератора видов.</p>
-      <div class="seg four" id="llmMode">
-        <label><input type="radio" name="llm_mode" value="auto"><span>авто</span></label>
-        <label><input type="radio" name="llm_mode" value="openai"><span>OpenAI</span></label>
-        <label><input type="radio" name="llm_mode" value="local"><span>локально</span></label>
-        <label><input type="radio" name="llm_mode" value="off"><span>выкл</span></label>
-      </div>
-      <p class="hint" id="modeHint"></p>
-      <label>Ключ OpenAI
-        <div class="row-in"><input type="password" data-c="openai_key" placeholder="sk-…  (platform.openai.com → API keys)" autocomplete="off">
-          <button class="small" id="keyEye" type="button" title="показать">👁</button>
-          <button class="small" id="keyTest" type="button">Проверить</button></div></label>
-      <div class="hint" id="keyState"></div>
-      <div class="row2">
-        <label>Модель OpenAI<input data-c="openai_model"></label>
-        <label>Лимит в день, $<input type="number" step="0.05" min="0" data-c="openai_daily_usd"></label>
-      </div>
-      <div class="sep"></div>
-      <label>LM Studio (локально, без ключа)<input data-c="lmstudio_url"></label>
-      <div class="row2">
-        <label>Модель<input data-c="local_model"></label>
-        <label>Путь к lms<input data-c="lms" placeholder="авто"></label>
-      </div>
-      <div class="row-in"><button class="small" id="lmsGet" type="button">Скачать локальную модель</button><span class="hint" id="lmsState"></span></div>
-      <p class="hint">LM Studio — бесплатно, <a href="https://lmstudio.ai" target="_blank">lmstudio.ai</a>. Модель ~3 ГБ, на время ответа ненадолго занимает видеокарту.</p>
-    </section>
+    <div class="set-pane" id="setPane">
+      <section class="set-sec" data-sec="system">
+        <div class="sec-h"><div><h4>Проверка системы</h4>
+          <p>Шаги конвейера и что на каждом используется. Шагу хватает одного варианта; недостающие модели докачиваются отсюда.</p></div>
+          <button class="small" id="docRun">Проверить снова</button></div>
+        <div class="checks" id="checks"><div class="hint">проверяю…</div></div>
+        <div class="dl" id="dlBox" hidden>
+          <div class="dl-row"><span id="dlFile"></span><span class="spacer"></span><span id="dlNum"></span></div>
+          <i class="bar"><i id="dlBar"></i></i>
+        </div>
+      </section>
 
-    <section class="card">
-      <div class="card-h"><b>ComfyUI и Blender</b></div>
-      <label>Адрес ComfyUI<input data-c="comfy_url"></label>
-      <label>Папка моделей для докачки<input data-c="models_dir" placeholder="авто: папки самого ComfyUI"></label>
-      <label>Blender 4.2+<input data-c="blender" id="blenderIn" placeholder="авто"></label>
-      <label>Порт этого сервера<input type="number" data-c="port"></label>
-      <p class="hint">Порт применится после перезапуска start.cmd.</p>
-    </section>
+      <section class="set-sec" data-sec="llm" hidden>
+        <div class="sec-h"><div><h4>Текстовая модель</h4>
+          <p>Переводит заметку на английский и дописывает детали с кадра для генератора видов.</p></div></div>
+        <div class="fgroup">
+          <div class="frow"><span class="fl"><b>Режим</b><small>кто готовит промпт</small></span>
+            <div class="fc"><div class="seg four" id="llmMode">
+              <label><input type="radio" name="llm_mode" value="auto"><span>авто</span></label>
+              <label><input type="radio" name="llm_mode" value="openai"><span>OpenAI</span></label>
+              <label><input type="radio" name="llm_mode" value="local"><span>локально</span></label>
+              <label><input type="radio" name="llm_mode" value="off"><span>выкл</span></label>
+            </div><p class="fl-d" id="modeHint"></p></div></div>
+        </div>
+        <div class="fgroup">
+          <div class="fg-h">OpenAI</div>
+          <div class="frow"><span class="fl"><b>Ключ API</b><small>platform.openai.com → API keys; хранится только на этой машине</small></span>
+            <div class="fc"><div class="row-in"><input type="password" data-c="openai_key" placeholder="sk-…" autocomplete="off">
+              <button class="small" id="keyEye" type="button" title="показать">👁</button>
+              <button class="small" id="keyTest" type="button">Проверить</button></div>
+              <span class="fl-d" id="keyState"></span></div></div>
+          <label class="frow"><span class="fl"><b>Модель</b><small>по умолчанию gpt-4.1-mini</small></span><input data-c="openai_model"></label>
+          <label class="frow"><span class="fl"><b>Лимит в день, $</b><small>сверх него заметки не переводятся</small></span>
+            <input type="number" step="0.05" min="0" data-c="openai_daily_usd"></label>
+        </div>
+        <div class="fgroup">
+          <div class="fg-h">LM Studio <span>локально, без ключа · <a href="https://lmstudio.ai" target="_blank">lmstudio.ai</a></span></div>
+          <label class="frow"><span class="fl"><b>Адрес сервера</b><small>LM Studio на этой машине</small></span><input data-c="lmstudio_url"></label>
+          <div class="frow"><span class="fl"><b>Модель</b><small>Gemma-3-4B, ~3 ГБ; Qwen3 «думает» и отвечает пусто</small></span>
+            <div class="fc"><input data-c="local_model">
+              <div class="row-in"><button class="small" id="lmsGet" type="button">Скачать локальную модель</button><span class="hint" id="lmsState"></span></div></div></div>
+          <label class="frow"><span class="fl"><b>Путь к lms</b><small>консольная утилита LM Studio</small></span><input data-c="lms" placeholder="авто"></label>
+        </div>
+      </section>
+
+      <section class="set-sec" data-sec="apps" hidden>
+        <div class="sec-h"><div><h4>ComfyUI и Blender</h4>
+          <p>Где искать программы, через которые идёт конвейер. Пустое поле — найти самому.</p></div></div>
+        <div class="fgroup">
+          <div class="fg-h">ComfyUI</div>
+          <label class="frow"><span class="fl"><b>Адрес ComfyUI</b><small>Desktop — порт 8000, portable и git — 8188</small></span><input data-c="comfy_url"></label>
+          <label class="frow"><span class="fl"><b>Папка моделей</b><small>куда докачивать недостающие модели</small></span>
+            <input data-c="models_dir" placeholder="авто: папки самого ComfyUI"></label>
+        </div>
+        <div class="fgroup">
+          <div class="fg-h">Blender</div>
+          <label class="frow"><span class="fl"><b>Blender 4.2+</b><small>путь к blender.exe — лоу-поли, запекание, экспорт</small></span>
+            <input data-c="blender" id="blenderIn" placeholder="авто"></label>
+        </div>
+        <div class="fgroup">
+          <div class="fg-h">propgen</div>
+          <label class="frow"><span class="fl"><b>Порт этого сервера</b><small>применится после перезапуска start.cmd</small></span><input type="number" data-c="port"></label>
+        </div>
+      </section>
+
+      <section class="set-sec" data-sec="update" hidden>
+        <div class="sec-h"><div><h4>Обновление</h4>
+          <p>Новая версия берётся из репозитория на GitHub: git pull, при новых зависимостях — pip, затем перезапуск.</p></div>
+          <button class="small" id="updCheck">Проверить</button></div>
+        <div class="upd" id="updBox"><div class="hint">версия…</div></div>
+        <div class="upd-act"><button class="primary" id="updGo" hidden>Обновить и перезапустить</button></div>
+      </section>
+    </div>
   </div>
   <div class="set-foot">
     <span class="hint" id="saveState"></span><span class="spacer"></span>

@@ -2,7 +2,7 @@
 картинка 512 px в режиме detail=low, короткий ответ, кэш по заметке и кадру, учёт расхода и дневной потолок.
 Ключ — одной строкой в .openai_key в корне проекта (в .gitignore; никуда не выводится).
 
-python tools/llm_openai.py --img crop.png --notes "ржавая стела ..." [--model gpt-4.1-nano]
+python tools/llm_openai.py --img crop.png --notes "ржавая стела ..." [--model gpt-4.1-nano] [--kind t2i]
 """
 import argparse
 import base64
@@ -16,6 +16,7 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402 — ключ, модель и лимит — из настроек propgen
+import llm  # noqa: E402 — общая с локальной моделью инструкция «по тексту» и фраза о кадре
 
 KEY_FILE = os.path.join(ROOT, ".openai_key")  # старое место ключа; основное — config.json
 USAGE = os.path.join(ROOT, "work", "llm_usage.jsonl")
@@ -36,6 +37,10 @@ translation: the user's notes translated into English COMPLETELY - keep every de
 details: comma-separated appearance details of THAT object visible in the photo and not already in the notes
   (shape, parts, materials, colors, wear), 8-30 words. Ignore everything around it (other signs, trees, cars, buildings, ground, sky).
 Never use the words game prop, photo, image, background, lighting, style."""
+
+# Режим «по тексту»: инструкция та же, что у локальной модели (llm.T2I), но ответ — JSON, как и у основного запроса.
+SYSTEM_T2I = llm.T2I.replace("60-140 words, one paragraph of plain English.",
+                             'Return JSON: {"prompt": "..."} - 60-140 words, one paragraph of plain English.')
 
 
 def key():
@@ -66,11 +71,14 @@ def _image(path, side=512):
     return buf.getvalue()
 
 
-def describe(notes, img=None, model=None):
-    """→ (текст промпта, сведения о вызове). Повтор с той же заметкой и кадром берётся из кэша — без запроса."""
+def describe(notes, img=None, model=None, kind="edit"):
+    """→ (текст промпта, сведения о вызове). Повтор с той же заметкой и кадром берётся из кэша — без запроса.
+    kind: edit — подпись предмета для перерисовки кадра; t2i — исчерпывающий промпт для генерации с нуля."""
     model = model or MODEL()
+    t2i = kind == "t2i"
     jpg = _image(img) if img and os.path.exists(img) else b""
-    h = hashlib.sha1((model + "\0" + (notes or "") + "\0").encode() + jpg).hexdigest()
+    # kind — в ключе, но у edit ключ прежний: накопленный кэш описаний не обнуляется
+    h = hashlib.sha1((model + "\0" + ("t2i\0" if t2i else "") + (notes or "") + "\0").encode() + jpg).hexdigest()
     cache = json.load(open(CACHE, encoding="utf-8")) if os.path.exists(CACHE) else {}
     if h in cache:
         return cache[h], {"model": model, "cached": True, "usd": 0}
@@ -78,13 +86,16 @@ def describe(notes, img=None, model=None):
     if jpg:
         content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jpg).decode(),
                                                            "detail": "low"}})
-    body = {"model": model, "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": content}],
+    body = {"model": model, "messages": [{"role": "system", "content": SYSTEM_T2I if t2i else SYSTEM},
+                                         {"role": "user", "content": content}],
             "response_format": {"type": "json_object"}}
     if model.startswith("gpt-5"):
         # у рассуждающих лимит включает рассуждения; 5.4 понимает только none/low…, 5.0 — minimal
-        body.update(reasoning_effort="none" if model.startswith("gpt-5.4") else "minimal", max_completion_tokens=600)
+        body.update(reasoning_effort="none" if model.startswith("gpt-5.4") else "minimal",
+                    max_completion_tokens=900 if t2i else 600)
     else:
-        body.update(max_tokens=220, temperature=0.2)
+        # t2i-абзац до 140 слов ≈ 200 токенов + обёртка JSON — 350 с запасом, но без простора для болтовни
+        body.update(max_tokens=350 if t2i else 220, temperature=0.2)
     t0 = time.time()
     req = urllib.request.Request("https://api.openai.com/v1/chat/completions", data=json.dumps(body).encode(),
                                  headers={"Authorization": "Bearer " + key(), "Content-Type": "application/json"})
@@ -99,6 +110,11 @@ def describe(notes, img=None, model=None):
     with open(USAGE, "a", encoding="utf-8") as f:
         f.write(json.dumps(info) + "\n")
     data = json.loads(resp["choices"][0]["message"]["content"] or "{}")
+    if t2i:
+        text = llm.t2i_finish(data.get("prompt"), notes)
+        cache[h] = text
+        json.dump(cache, open(CACHE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        return text, info
     tr = " ".join((data.get("translation") or "").split()).rstrip(".")
     det = " ".join((data.get("details") or "").split()).rstrip(".")
     if not tr and not det:
@@ -118,7 +134,8 @@ if __name__ == "__main__":
     ap.add_argument("--img", default="")
     ap.add_argument("--notes", default="")
     ap.add_argument("--model", default=None)
+    ap.add_argument("--kind", default="edit", choices=["edit", "t2i"])
     a = ap.parse_args()
-    text, info = describe(a.notes, a.img or None, a.model)
+    text, info = describe(a.notes, a.img or None, a.model, kind=a.kind)
     print(text)
     print(info)

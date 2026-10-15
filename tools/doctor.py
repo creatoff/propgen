@@ -50,15 +50,39 @@ MODELS = [
      "gb": 0.30, "group": "multiview"},
     {"folder": "diffusion_models", "file": "pixal3d_multiview_int8_convrot.safetensors", "loader": ("UNETLoader", "unet_name"),
      "repo": "Comfy-Org/Pixal3D", "path": "diffusion_models/pixal3d_multiview_int8_convrot.safetensors", "gb": 5.58, "group": "multiview"},
+    # быстрый движок видов: FLUX.2 Klein 4B (Apache 2.0) — целиком влезает в 8 ГБ, 4 шага
+    {"folder": "diffusion_models", "file": "flux-2-klein-4b-fp8.safetensors", "loader": ("UNETLoader", "unet_name"),
+     "repo": "black-forest-labs/FLUX.2-klein-4b-fp8", "path": "flux-2-klein-4b-fp8.safetensors", "gb": 4.07, "group": "klein"},
+    {"folder": "text_encoders", "file": "qwen_3_4b.safetensors", "loader": ("CLIPLoader", "clip_name"),
+     "repo": "Comfy-Org/z_image_turbo", "path": "split_files/text_encoders/qwen_3_4b.safetensors", "gb": 8.04, "group": "klein"},
+    {"folder": "vae", "file": "flux2-vae.safetensors", "loader": ("VAELoader", "vae_name"),
+     "repo": "Comfy-Org/flux2-dev", "path": "split_files/vae/flux2-vae.safetensors", "gb": 0.34, "group": "klein"},
     # модель Pixal3D для одного изображения
     {"folder": "diffusion_models", "file": "pixal3d_int8_convrot.safetensors", "loader": ("UNETLoader", "unet_name"),
      "repo": "Comfy-Org/Pixal3D", "path": "diffusion_models/pixal3d_int8_convrot.safetensors", "gb": 5.6, "group": "pixal3d"},
     {"folder": "geometry_estimation", "file": "moge_2_vitl_normal_fp16.safetensors", "loader": ("LoadMoGeModel", "model_name"),
      "repo": "Comfy-Org/MoGe", "path": "geometry_estimation/moge_2_vitl_normal_fp16.safetensors", "gb": 0.66, "group": "pixal3d"},
+    # Krea-2 Turbo — необязательная модель режима «по тексту». Качаем лёгкий GGUF Q4_K_M (7 ГБ, архитектура qwen_image —
+    # грузится нодой ComfyUI-GGUF, почти целиком влезает в 8 ГБ); если уже лежит любой другой вариант весов — берём его.
+    # alts — в порядке предпочтения; also — варианты под другим загрузчиком (официальные safetensors Comfy-Org).
+    {"folder": "diffusion_models", "file": "krea2_turbo-Q4_K_M.gguf", "loader": ("UnetLoaderGGUF", "unet_name"),
+     "alts": ["krea2_turbo-Q4_K_M.gguf", "krea2_turbo-Q4_K_S.gguf", "krea2_turbo-Q4_0.gguf", "krea2_turbo-Q5_K_M.gguf",
+              "krea2_turbo-Q5_K_S.gguf", "krea2_turbo-Q3_K_M.gguf", "krea2_turbo-Q6_K.gguf", "krea2_turbo-Q8_0.gguf"],
+     "also": (("UNETLoader", "unet_name"), ["krea2_turbo_nvfp4.safetensors", "krea2_turbo_fp8_scaled.safetensors",
+                                            "krea2_turbo_int8_convrot.safetensors", "krea2_turbo_mxfp8.safetensors",
+                                            "krea2_turbo_bf16.safetensors"]),
+     "repo": "vantagewithai/Krea-2-Turbo-GGUF", "path": "krea2_turbo-Q4_K_M.gguf", "gb": 6.97, "group": "krea"},
+    {"folder": "text_encoders", "file": "qwen3vl_4b_fp8_scaled.safetensors", "loader": ("CLIPLoader", "clip_name"),
+     "alts": ["qwen3vl_4b_fp8_scaled.safetensors", "qwen3vl_4b_bf16.safetensors"],
+     "repo": "Comfy-Org/Krea-2", "path": "text_encoders/qwen3vl_4b_fp8_scaled.safetensors", "gb": 5.24, "group": "krea"},
+    {"folder": "vae", "file": "qwen_image_vae.safetensors", "loader": ("VAELoader", "vae_name"),
+     "repo": "Comfy-Org/Krea-2", "path": "vae/qwen_image_vae.safetensors", "gb": 0.25, "group": "krea"},
 ]
 GROUPS = {"core": "основной путь: фото → чистый фронт → TRELLIS.2 → лоу-поли",
           "multiview": "режим «4 вида» (развороты + Pixal3D multiview)",
+          "klein": "быстрый движок фронта FLUX.2 Klein 4B",
           "pixal3d": "модель Pixal3D для одного изображения",
+          "krea": "Krea-2 Turbo (GGUF Q4) — необязательная модель режима «по тексту»; подхватит и уже скачанные варианты",
           "hdri": "панорамы 4k для фона просмотрщика (~80 МБ)"}
 
 HDRI = ["studio_small_09", "abandoned_factory_canteen_01", "industrial_sunset_02_puresky", "kloofendal_48d_partly_cloudy_puresky"]
@@ -130,13 +154,41 @@ def check_comfy():
     except Exception:  # noqa: BLE001
         out["folders"] = {}
     models = []
+    opts = lambda cls, inp: _options((info.get(cls, {}).get("input", {}).get("required", {}) or {}).get(inp))  # noqa: E731
     for m in MODELS:
-        cls, inp = m["loader"]
-        spec = (info.get(cls, {}).get("input", {}).get("required", {}) or {}).get(inp)
-        have = m["file"] in _options(spec)
-        models.append({**{k: m[k] for k in ("folder", "file", "gb", "group")}, "ok": have})
+        found = _found(m, opts)
+        models.append({**{k: m[k] for k in ("folder", "file", "gb", "group")}, "ok": bool(found),
+                       "found": found, "download": m.get("download", True)})
     out["models"] = models
     return out
+
+
+def _found(m, opts):
+    """Имя файла модели, которое реально видит ComfyUI (с учётом вариантов весов alts/also), или None.
+    opts(cls, inp) — список вариантов комбобокса загрузчика."""
+    have = opts(*m["loader"])
+    f = next((f for f in m.get("alts") or [m["file"]] if f in have), None)
+    if not f and m.get("also"):
+        loader, names = m["also"]
+        have = opts(*loader)
+        f = next((n for n in names if n in have), None)
+    return f
+
+
+def krea_files():
+    """Файлы Krea-2, которые уже есть в ComfyUI: {"unet", "clip", "vae"} или None, если чего-то нет.
+    Лёгкий запрос — object_info только трёх загрузчиков, а не всего ComfyUI."""
+    def opts(cls, inp):
+        try:
+            return _options(_get(f"/object_info/{cls}", 10)[cls]["input"]["required"].get(inp))
+        except Exception:  # noqa: BLE001 — нет ноды (например, ComfyUI-GGUF) или ComfyUI не отвечает
+            return []
+    got = {}
+    for m, key in zip([m for m in MODELS if m["group"] == "krea"], ("unet", "clip", "vae")):
+        got[key] = _found(m, opts)
+        if not got[key]:
+            return None
+    return got
 
 
 def check_blender():
@@ -190,10 +242,133 @@ def check_hdri():
     return {"ok": len(have) == len(HDRI), "have": len(have), "total": len(HDRI)}
 
 
+# ---------- шаги конвейера: экран «Проверка системы» показывает цепочку, а не свалку проверок
+# Шагу хватает одного варианта из options; optional — шаг можно пропустить. needs — требования варианта (нужны все):
+# "node:<класс>", "group:<группа MODELS>", "file:<группа>/<файл>", "blender", "py:<модуль>", "llm:openai|local";
+# "a|b" — хватит любого из двух. Минимальный набор, без которого конвейер не едет, — в _minimum().
+_QWEN_FRONT = ["file:core/qwen-image-edit-2511-Q4_K_M.gguf", "file:core/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+               "file:core/qwen_image_vae.safetensors", "file:core/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"]
+_SHARED_3D = ["file:core/trellis_2_shape_vae_bf16.safetensors", "file:core/trellis_2_texture_vae_bf16.safetensors",
+              "file:core/dino_v3_L_naf_fp32.safetensors", "file:core/birefnet.safetensors"]
+STEPS = [
+    {"id": "prompt", "title": "Промпт", "what": "заметка → английский промпт для генератора", "optional": True, "options": [
+        {"id": "openai", "title": "OpenAI", "needs": ["llm:openai"]},
+        {"id": "local", "title": "LM Studio + Gemma-3-4B", "needs": ["llm:local"]},
+        {"id": "off", "title": "без модели — заметка сразу по-английски", "needs": []}]},
+    {"id": "front", "title": "Фронт", "what": "фото → чистый фронт без фона", "options": [
+        {"id": "qwen", "title": "Qwen-Image-Edit-2511", "needs": ["node:UnetLoaderGGUF", *_QWEN_FRONT]},
+        {"id": "klein", "title": "FLUX.2 Klein 4B — быстро", "needs": ["group:klein"]},
+        {"id": "text", "title": "по тексту — Klein или Krea-2", "needs": ["group:klein|group:krea"]}]},
+    {"id": "multiview", "title": "4 вида", "what": "развороты предмета и 3D по четырём видам", "optional": True, "options": [
+        {"id": "multiview", "title": "LoRA Multiple-Angles + Pixal3D multiview", "needs": ["group:multiview"]}]},
+    {"id": "mesh", "title": "3D", "what": "фронт → хай-поли с текстурой", "options": [
+        {"id": "trellis2", "title": "TRELLIS.2", "needs": ["file:core/trellis_2_int8_convrot.safetensors", *_SHARED_3D]},
+        {"id": "pixal3d", "title": "Pixal3D", "needs": ["group:pixal3d", *_SHARED_3D]}]},
+    {"id": "lowpoly", "title": "Лоу-поли и запекание", "what": "упрощение сетки, развёртка, карты", "options": [
+        {"id": "blender", "title": "Blender + pymeshlab", "needs": ["blender", "py:pymeshlab"]}]},
+    {"id": "export", "title": "Экспорт", "what": "архив glb · gltf · fbx · obj", "options": [
+        {"id": "blender", "title": "Blender", "needs": ["blender"]}]},
+]
+_MODELS_TO_COMFY = ("node", "group", "file")
+
+
+def _need(r, need):
+    """Одно требование → (выполнено, чего не хватает [строки], недостающие модели [(MODELS, статус)])."""
+    if "|" in need:
+        alts = [_need(r, n) for n in need.split("|")]
+        ok = next((a for a in alts if a[0]), None)
+        # не хватает всех вариантов: показываем первый — его обычно и стоит докачать
+        return ok or (False, [" или ".join(dict.fromkeys(", ".join(a[1]) for a in alts))], alts[0][2])
+    kind, _, arg = need.partition(":")
+    c = r["comfy"]
+    if kind in _MODELS_TO_COMFY and not c["ok"]:
+        return False, ["ComfyUI не отвечает"], []
+    if kind == "node":
+        ok = any(n["name"] == arg and n["ok"] for n in c["nodes"])
+        return ok, [] if ok else [f"нода {arg}"], []
+    if kind in ("group", "file"):
+        grp, _, fname = arg.partition("/")
+        pairs = [(m, st) for m, st in zip(MODELS, c["models"]) if m["group"] == grp and (not fname or m["file"] == fname)]
+        if not pairs:
+            return False, [f"нет описания моделей «{arg}»"], []
+        miss = [(m, st) for m, st in pairs if not st["ok"]]
+        return not miss, [m["file"] for m, _ in miss], miss
+    if kind == "blender":
+        return r["blender"]["ok"], [] if r["blender"]["ok"] else ["Blender 4.2+"], []
+    if kind == "py":
+        ok = arg not in r["python"]["missing"]
+        return ok, [] if ok else [f"Python-модуль {arg}"], []
+    if kind == "llm":
+        l = r["llm"]
+        if arg == "openai":
+            return l["openai_key"], [] if l["openai_key"] else ["нет ключа OpenAI"], []
+        ok = bool(l["lms"]) and l["local_model_ok"]
+        return ok, [] if ok else ["LM Studio не установлен" if not l["lms"] else "модель не скачана в LM Studio"], []
+    return False, [f"неизвестное требование {need}"], []
+
+
+def _used_files(r, needs):
+    """Файлы моделей, которые вариант реально возьмёт (found — с учётом вариантов весов), для подсказки в интерфейсе."""
+    c, out = r["comfy"], []
+    if not c["ok"]:
+        return out
+    for alt in (a for n in needs for a in n.split("|")):
+        kind, _, arg = alt.partition(":")
+        if kind in ("group", "file"):
+            grp, _, fname = arg.partition("/")
+            out += [st["found"] for m, st in zip(MODELS, c["models"])
+                    if m["group"] == grp and (not fname or m["file"] == fname) and st.get("found")]
+    return list(dict.fromkeys(out))
+
+
+def steps_status(r):
+    """STEPS с итогом по каждому варианту: ok, чего не хватает, что можно докачать (группы и ГБ), что — только руками."""
+    l = r["llm"]
+    current = {"prompt": {"auto": "openai" if l["openai_key"] else "local"}.get(l["mode"], l["mode"])}
+    out = []
+    for s in STEPS:
+        opts = []
+        for o in s["options"]:
+            res = [_need(r, n) for n in o["needs"]]
+            miss_models = [p for x in res for p in x[2]]
+            dl = [(m, st) for m, st in miss_models if m.get("download", True)]
+            opts.append({"id": o["id"], "title": o["title"], "ok": all(x[0] for x in res),
+                         "missing": list(dict.fromkeys(t for x in res for t in x[1])),  # без повторов «ComfyUI не отвечает»
+                         "download": sorted({m["group"] for m, _ in dl}), "gb": round(sum(m["gb"] for m, _ in dl), 2),
+                         "manual": [m["file"] for m, _ in miss_models if not m.get("download", True)],
+                         "files": _used_files(r, o["needs"]), "current": current.get(s["id"]) == o["id"]})
+        cur = next((o for o in opts if o["current"]), None)
+        ok = any(o["ok"] for o in opts) and (cur is None or cur["ok"])
+        out.append({"id": s["id"], "title": s["title"], "what": s["what"], "optional": bool(s.get("optional")),
+                    "state": "ok" if ok else "opt" if s.get("optional") or any(o["ok"] for o in opts) else "bad",
+                    "options": opts})
+    return out
+
+
+def _minimum(r):
+    """Минимальный набор: ComfyUI с нодами + модели core + Blender + Python-зависимости."""
+    c, miss, dl = r["comfy"], [], []
+    if not c["ok"]:
+        miss.append("ComfyUI")
+    else:
+        miss += [f"нода {n['name']}" for n in c["nodes"] if not n["ok"]]
+        core = [m for m in c["models"] if m["group"] == "core" and not m["ok"]]
+        if core:
+            miss.append(f"модели основного пути ({len(core)} шт.)")  # объём — на кнопке «Скачать»
+            dl = ["core"]
+    if not r["blender"]["ok"]:
+        miss.append("Blender 4.2+")
+    if not r["python"]["ok"]:
+        miss.append("Python-зависимости")
+    return {"ok": not miss, "missing": miss, "download": dl}
+
+
 def check_all():
     comfy = check_comfy()
-    return {"comfy": comfy, "blender": check_blender(), "llm": check_llm(), "python": check_python(), "hdri": check_hdri(),
-            "groups": GROUPS, "t": time.time()}
+    r = {"comfy": comfy, "blender": check_blender(), "llm": check_llm(), "python": check_python(), "hdri": check_hdri(),
+         "groups": GROUPS, "t": time.time()}
+    r["steps"], r["minimum"] = steps_status(r), _minimum(r)
+    return r
 
 
 # ---------- докачка
@@ -268,7 +443,7 @@ def download(groups=("core",), log=print):
             if not comfy["ok"]:
                 raise RuntimeError(comfy["error"])
             for m, st in zip(MODELS, comfy["models"]):
-                if m["group"] in groups and not st["ok"]:
+                if m["group"] in groups and not st["ok"] and m.get("download", True):
                     jobs.append((HF.format(repo=m["repo"], path=m["path"]), os.path.join(target_dir(m["folder"], comfy["folders"]), m["file"])))
         if "hdri" in groups:
             for h in HDRI:
