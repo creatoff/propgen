@@ -14,6 +14,16 @@
 </script>
 </head>
 <body>
+<!-- заставка: до первых данных от сервера и при потере связи с ним (app.js → boot, poll) -->
+<div class="splash" id="splash" role="status" aria-live="polite">
+  <div class="splash-box">
+    <span class="logo splash-logo"></span>
+    <div class="splash-name">propgen</div>
+    <div class="splash-msg" id="splashMsg">запускаюсь…</div>
+    <i class="splash-bar"><i></i></i>
+    <div class="splash-hint" id="splashHint"></div>
+  </div>
+</div>
 <div class="app">
   <header class="titlebar">
     <div class="brand"><span class="logo"></span>propgen</div>

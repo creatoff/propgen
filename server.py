@@ -802,4 +802,19 @@ if __name__ == "__main__":
                     if s.get("status") in ("queued", "running"):
                         s.update(status="error", error="прервано перезапуском сервера")
             update(pid, fix)
-    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT") or config.get("port")), log_level="warning")
+    port = int(os.environ.get("PORT") or config.get("port"))
+    if os.environ.get("PROPGEN_OPEN") == "1":
+        # браузер — когда сервер уже отвечает: start.cmd открывал его заранее, и первым экраном была ошибка соединения
+        def open_when_ready():
+            import urllib.request
+            import webbrowser
+            for _ in range(300):
+                try:
+                    urllib.request.urlopen(f"http://127.0.0.1:{port}/api/version", timeout=1).close()
+                    break
+                except Exception:  # noqa: BLE001
+                    time.sleep(0.2)
+            webbrowser.open(f"http://127.0.0.1:{port}/")
+        threading.Thread(target=open_when_ready, daemon=True).start()
+    print(f"propgen: http://127.0.0.1:{port}", flush=True)
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

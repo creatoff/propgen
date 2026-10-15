@@ -51,6 +51,9 @@
 - Самообновление: `GET /api/update?fetch=1` (новые коммиты), `POST /api/update` — `git pull --ff-only`, при новом
   `requirements.txt` — pip, затем перезапуск. `start.cmd` — «надзиратель»: сервер выходит с кодом 3 → запускается снова;
   без него (`PROPGEN_SUPERVISED` не задан) перезапускает `tools/restart.py`. Отказ при идущей задаче и локальных правках.
+  Браузер открывает сам сервер, когда уже отвечает (`PROPGEN_OPEN=1` из `start.cmd`, после обновления — нет).
+  Интерфейс держит заставку `#splash` до загрузки пропов и настроек (`boot()` в app.js) и показывает её снова,
+  если `poll()` дважды подряд не достучался до сервера; `/api/doctor` идёт уже за заставкой.
 - `POST /api/props/<id>/export {height_cm, sources}` → `tools/pack.py` + Blender `tools/export.py` → zip по схеме Poly Haven.
 - `web/` — статика без сборки: `app.js` (вся логика), `controls.js` (свои select/range/number поверх нативных),
   `index.html`, `style.css`. three.js с CDN. Просмотрщик 3D создаётся только на вкладке «Модель» при пустой очереди

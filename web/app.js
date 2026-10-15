@@ -760,7 +760,7 @@ function renderComfy() {
 }
 setInterval(renderComfy, 1000);
 
-let pollTimer = null, healthAt = 0;
+let pollTimer = null, healthAt = 0, lostPolls = 0;
 async function poll() {
   clearTimeout(pollTimer);
   try {
@@ -793,8 +793,14 @@ async function poll() {
       const running = queue.current?.pid === cur.id ? queue.current.step : null;
       if (running && !$("#drawer").hidden && logStep !== running) openLog(running); else refreshLog();
     }
-  } catch (e) { $("#queue").innerHTML = `<span class="dot bad"></span>сервер недоступен`; }
-  pollTimer = setTimeout(poll, queue.current || queue.queued.length ? 2000 : 6000);
+    if (lostPolls) { lostPolls = 0; splashOff(); }
+  } catch (e) {
+    $("#queue").innerHTML = `<span class="dot bad"></span>сервер недоступен`;
+    // два промаха подряд — заставка поверх интерфейса: работать без сервера всё равно нельзя
+    if (isOffline(e) && ++lostPolls >= 2)
+      splash(updRun.busy ? "перезапускаюсь после обновления…" : "нет связи с сервером…", updRun.busy ? "" : NO_SERVER, true);
+  }
+  pollTimer = setTimeout(poll, lostPolls ? 2000 : queue.current || queue.queued.length ? 2000 : 6000);
 }
 
 // ================= раскладка: ширина колонок, свёрнутые панели и блоки (запоминается)
@@ -1304,15 +1310,46 @@ $("#updPopGo").onclick = runUpdate;
 setTimeout(() => checkUpdate(1, true), 4000);
 setInterval(() => { if (!updRun.busy && Date.now() - updAt >= UPD_EVERY) checkUpdate(1, true); }, 60 * 1000);
 
-// первый запуск: если чего-то не хватает — сразу показать проверку
-// окно открывается само — пометка объясняет почему, конкретно (подробности — в блоке «Не хватает…» ниже)
-api("/api/doctor").then(r => {
-  if (setupReady(r)) return $("#settingsBtn").classList.remove("alert");
-  const miss = r.minimum?.missing || [];
-  openSettings(miss.length ? `Открылось при запуске — не хватает ${miss.join(", ")}` : "Открылось при запуске — есть что поправить", "system");
-}).catch(() => {});
+// ================= заставка: до первых данных от сервера и при потере связи с ним
+
+const NO_SERVER = "Сервер propgen не отвечает. Окно start.cmd открыто? Если оно закрылось с ошибкой — запустите debug.cmd и пришлите архив.";
+function splash(msg, hint = "", lost = false) {
+  const el = $("#splash");
+  $("#splashMsg").textContent = msg;
+  $("#splashHint").textContent = hint;
+  el.classList.toggle("lost", lost);
+  el.classList.remove("gone");
+}
+const splashOff = () => $("#splash").classList.add("gone");
+const isOffline = e => e instanceof TypeError;  // fetch без ответа сервера; HTTP-ошибки — это Error с текстом
+
+// Ждём только то, без чего не открыть интерфейс и настройки: список пропов и настройки. Проверка системы
+// (/api/doctor: ComfyUI, Blender, lms — до минуты) идёт уже за заставкой и сама откроет настройки, если чего-то нет.
+async function boot() {
+  for (let i = 0; ; i++) {
+    try {
+      splash(i ? "жду сервер…" : "загружаю пропы…", i >= 4 ? NO_SERVER : "");
+      await loadList();
+      splash("загружаю настройки…");
+      await loadSettings();
+      break;
+    } catch (e) {
+      if (!isOffline(e)) break;  // сервер отвечает, но с ошибкой — лучше показать интерфейс, там видно больше
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+  splashOff();
+  if (props.length && !cur) select(props[0].id);
+  poll();
+  // первый запуск: если чего-то не хватает — сразу показать проверку
+  // окно открывается само — пометка объясняет почему, конкретно (подробности — в блоке «Не хватает…» ниже)
+  api("/api/doctor").then(r => {
+    if (setupReady(r)) return $("#settingsBtn").classList.remove("alert");
+    const miss = r.minimum?.missing || [];
+    openSettings(miss.length ? `Открылось при запуске — не хватает ${miss.join(", ")}` : "Открылось при запуске — есть что поправить", "system");
+  }).catch(() => {});
+}
 
 enhance();  // свои выпадающие списки, ползунки и числовые поля
 setTab("crop");
-loadList().then(() => { if (props.length) select(props[0].id); });
-poll();
+boot();

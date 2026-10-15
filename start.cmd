@@ -11,20 +11,17 @@ if not exist .venv\Scripts\python.exe (
 set PYTHONIOENCODING=utf-8
 rem if Python dies silently (DLL clash, antivirus) faulthandler at least prints where
 set PYTHONFAULTHANDLER=1
-rem no quotes inside for /f: with several pairs cmd strips the outer ones and the command breaks
-for /f %%P in ('.venv\Scripts\python.exe tools\config.py port') do set PORT_CFG=%%P
-if not defined PORT_CFG (
-  echo Could not read config - does Python start? Using port 8795.
-  set PORT_CFG=8795
-)
-start "" http://127.0.0.1:%PORT_CFG%
+rem the server opens the browser itself once it answers (opening it here showed a connection error first)
+set PROPGEN_OPEN=1
 set PROPGEN_SUPERVISED=1
 :run
-echo propgen server: http://127.0.0.1:%PORT_CFG%  (Ctrl+C to stop)
+echo Starting propgen server... (Ctrl+C to stop)
 .venv\Scripts\python.exe server.py
 set RC=%ERRORLEVEL%
 if "%RC%"=="3" (
   echo === restarting after update ===
+  rem the open page reloads by itself after an update - no second tab
+  set PROPGEN_OPEN=
   goto run
 )
 rem never close silently: the exit code is what tells us what broke
