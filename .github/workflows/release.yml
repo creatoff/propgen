@@ -26,14 +26,14 @@ jobs:
     env:
       PYTHONIOENCODING: utf-8
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
       # python-build-standalone, колёса pip и vc_redist: ключ меняется вместе с зависимостями и версией сборщика
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: build/cache
           key: build-cache-${{ hashFiles('requirements.txt', 'tools/build/build.py') }}
@@ -68,7 +68,7 @@ jobs:
       - name: Проверка инсталлятора
         run: python tools/build/build.py --install-test "dist/propgen-setup-${{ steps.ver.outputs.version }}.exe"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: propgen-setup-${{ steps.ver.outputs.version }}
           path: |
@@ -80,7 +80,7 @@ jobs:
 
       - name: GitHub Release
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/propgen-setup-${{ steps.ver.outputs.version }}.exe
           generate_release_notes: true
