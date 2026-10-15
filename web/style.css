@@ -324,6 +324,9 @@ dialog.settings[open] { display: flex; }
 .sec-h > div { flex: 1; min-width: 0; }
 .sec-h h4 { margin: 0; font-size: 16px; font-weight: 600; }
 .sec-h p { margin: 3px 0 0; color: var(--dim); font-size: 12.5px; line-height: 1.45; max-width: 560px; }
+.sec-h .sec-btns { display: flex; gap: 8px; flex-shrink: 0; }
+.sec-h .dbg-state:empty { display: none; }
+.sec-h .dbg-state { color: var(--acc2); }
 .fgroup { display: flex; flex-direction: column; gap: 10px; }
 .fg-h { display: flex; align-items: baseline; gap: 10px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; color: var(--dim); }
 .fg-h span { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 12px; color: var(--dim2); }

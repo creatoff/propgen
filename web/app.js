@@ -1158,6 +1158,21 @@ function flatChecks(r) {
 const setupReady = r => r.minimum ? r.minimum.ok :
   r.comfy.ok && r.comfy.nodes.every(n => n.ok) && r.comfy.models.filter(m => m.group === "core").every(m => m.ok) && r.blender.ok && r.python.ok;
 $("#docRun").onclick = runDoctor;
+// отладочный архив (tools/debug.py): сборка — секунды, а с проверкой ComfyUI и Blender бывает и минута, поэтому
+// через fetch, а не простой ссылкой — так видно «собираю…» и ошибку сервера, а не пустое ожидание
+$("#dbgGet").onclick = async () => {
+  const btn = $("#dbgGet"), st = $("#dbgState"), was = st.textContent;
+  btn.disabled = true; st.textContent = "собираю…";
+  try {
+    const r = await fetch("/api/debug");
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    const name = (r.headers.get("content-disposition") || "").match(/filename="?([^";]+)/)?.[1] || "propgen-debug.zip";
+    const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(await r.blob()), download: name });
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    st.textContent = `✓ ${name} — пришлите этот файл`;
+  } catch (e) { st.textContent = "✗ " + e.message; setTimeout(() => (st.textContent = was), 8000); }
+  btn.disabled = false;
+};
 
 async function startDownload(groups) {
   try { await api("/api/doctor/download", json("POST", { groups })); } catch (e) { return alert(e.message); }

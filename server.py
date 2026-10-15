@@ -719,6 +719,18 @@ def get_doctor():
     return doctor.check_all()
 
 
+@app.get("/api/debug")
+def get_debug():
+    """Отладочный архив (тот же, что debug.cmd): сводка, doctor, логи, последние пропы — без ключей.
+    Импорт здесь, а не наверху: ошибка в tools/debug.py не должна мешать серверу подняться."""
+    import debug  # noqa: E402 — tools/ уже в sys.path
+    try:
+        path = debug.collect()
+    except Exception as e:  # noqa: BLE001 — в т.ч. отказ verify(): архив с ключом не отдаём
+        raise HTTPException(500, f"отчёт не собрался: {e}")
+    return FileResponse(path, media_type="application/zip", filename=os.path.basename(path))
+
+
 @app.get("/api/engines")
 def get_engines():
     """Какие необязательные движки есть в ComfyUI прямо сейчас (быстро — без полного /api/doctor)."""

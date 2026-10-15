@@ -12,6 +12,7 @@
 | Проверить, что всё едет целиком | сервер запущен → `.venv\Scripts\python tools\smoke.py` (пример `examples/kettle.png`, печатает время шагов) |
 | Что сейчас происходит | `GET http://127.0.0.1:8795/api/queue` — текущий шаг, очередь, живой прогресс ComfyUI (`comfy.cls/value/max/last_event`) |
 | Почему шаг упал | `work/props/<id>/logs/<views|mesh|lowpoly|export>.log`, статус — `work/props/<id>/meta.json` → `steps` |
+| Друг прислал `debug-*.zip` / разобрать чужую поломку | начни с `summary.txt` (ОС, git, ComfyUI/GPU, Blender, LLM, сервер, итог doctor), затем `doctor.json`; дальше `errors.txt`, `server.log`, `props/<id>/logs`, `comfy_log.txt`. Собирает `debug.cmd` / `tools/debug.py` / `GET /api/debug` (только stdlib, ключи маскируются и перепроверяются) |
 
 ## Запуск
 
