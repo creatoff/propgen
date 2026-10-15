@@ -234,9 +234,14 @@ def redist_info(path):
     """Подпись и версия файла через PowerShell: (Status, Subject, FileVersion)."""
     ps = ("$s = Get-AuthenticodeSignature -LiteralPath $env:VCR; $v = (Get-Item -LiteralPath $env:VCR).VersionInfo;"
           " Write-Output ('{0}|{1}|{2}' -f $s.Status, $s.SignerCertificate.Subject, $v.FileVersion)")
+    # PSModulePath от PowerShell 7 (шаги pwsh в GitHub Actions) ломает загрузку модулей Windows PowerShell 5.1:
+    # Get-AuthenticodeSignature молча не находится, подпись выходит пустой — даём 5.1 его собственные пути
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
     p = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True,
-                       env=dict(os.environ, VCR=path))
+                       env=dict(env, VCR=path))
     parts = (p.stdout.strip().splitlines() or [""])[-1].split("|")
+    if len(parts) != 3 or not parts[0]:
+        log(f"проверка подписи: rc={p.returncode} stderr={p.stderr.strip()[-600:]}")
     return parts if len(parts) == 3 else ["", "", ""]
 
 
