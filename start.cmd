@@ -7,7 +7,9 @@ if not exist ".venv\Scripts\python.exe" (
   exit /b 1
 )
 set PYTHONIOENCODING=utf-8
-for /f %%P in ('".venv\Scripts\python.exe" -c "import sys; sys.path.insert(0,'tools'); import config; print(config.get('port'))"') do set PORT_CFG=%%P
+rem без кавычек внутри for /f: при нескольких парах cmd срезает внешние и команда разваливается
+for /f %%P in ('.venv\Scripts\python.exe tools\config.py port') do set PORT_CFG=%%P
+if not defined PORT_CFG set PORT_CFG=8795
 start "" http://127.0.0.1:%PORT_CFG%
 rem код выхода 3 — сервер обновился из репозитория и просит перезапуск
 set PROPGEN_SUPERVISED=1

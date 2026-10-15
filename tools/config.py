@@ -97,3 +97,11 @@ def find_lms():
 def venv_python():
     """Python проекта (с pymeshlab и т.п.) — его зовут скрипты, работающие внутри Blender."""
     return os.environ.get("PROPGEN_PY") or sys.executable
+
+
+if __name__ == "__main__":
+    # для .cmd: «python tools\config.py port» — без кавычек внутри for /f (cmd срезает внешние и ломает команду)
+    # только по одному полю и никогда — ключ: весь конфиг в консоль не печатаем
+    if len(sys.argv) != 2 or "key" in sys.argv[1]:
+        sys.exit("python tools/config.py <поле>, например port")
+    print(get(sys.argv[1]))

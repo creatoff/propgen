@@ -28,6 +28,7 @@ if not exist .venv (
 
 echo.
 echo === Проверка системы ===
+set PYTHONIOENCODING=utf-8
 ".venv\Scripts\python.exe" tools\doctor.py
 echo.
 echo Дальше: start.cmd — и шестерёнка «Настройки» в окне, если что-то выше с крестиком.

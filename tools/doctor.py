@@ -498,6 +498,12 @@ def report(r):
 
 
 if __name__ == "__main__":
+    # вывод в трубу или файл на Windows — cp1252/cp866: кириллица и ✓ роняли отчёт целиком
+    for s in (sys.stdout, sys.stderr):
+        try:
+            s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", nargs="?", default="check", choices=["check", "download"])
     ap.add_argument("--json", action="store_true")
