@@ -22,19 +22,21 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-PROPS = os.path.join(ROOT, "work", "props")
 TOOLS = os.path.join(ROOT, "tools")
+sys.path.insert(0, TOOLS)
+import config  # noqa: E402 — config.json: пути, адреса, ключ, режим текстовой модели; папка данных (DATA/WORK)
+
+# пропы — в папке данных: в git-режиме это ROOT/work, как было, у установленной версии — %LOCALAPPDATA%\propgen\work
+PROPS = os.path.join(config.WORK, "props")
 PY = sys.executable  # скрипты Comfy работают на stdlib, venv подходит
 VIEWS = ("front", "left", "back", "right")
 DEFAULTS = {"mode": "single", "single_src": "front", "model": "trellis2", "tris": 1500, "tex": 1024, "crease": 50, "seed": 1, "rot": 0,
             "height_cm": 0, "export_sources": False,
             "views_engine": "qwen", "wear": "keep", "t2i_model": "klein"}
 os.makedirs(PROPS, exist_ok=True)
-sys.path.insert(0, TOOLS)
 import llm  # noqa: E402 — описание пропа локальной моделью (LM Studio, GPU через очередь)
 import comfywatch  # noqa: E402 — живой прогресс ComfyUI (websocket) для строки состояния
 import llm_openai  # noqa: E402 — описание через OpenAI API: быстро, без видеокарты, экономно
-import config  # noqa: E402 — config.json: пути, адреса, ключ, режим текстовой модели
 import doctor  # noqa: E402 — проверка окружения и докачка моделей
 import pack  # noqa: E402 — архив пропа для движков (структура Poly Haven)
 
@@ -565,6 +567,7 @@ def cancel(body: dict):
 
 @app.get("/api/queue")
 def get_queue():
+    SEEN["t"] = time.time()  # страницу опрашивает poll(): открытая вкладка есть (см. open_when_ready)
     with lock:
         cur = state["current"]
         return {"current": cur and {k: cur[k] for k in ("pid", "step") if k in cur} | {"view": cur.get("view")},
@@ -617,9 +620,12 @@ def export_prop(pid: str, body: dict):
     return {**info, "url": f"/files/{pid}/{rel}?t={int(os.path.getmtime(zpath))}"}
 
 
-# ---------- версия и самообновление из git
+# ---------- версия и самообновление: из git (клон репозитория) или из GitHub Releases (установленная версия)
 
 STARTED = time.time()
+SEEN = {"t": 0.0}  # когда страница последний раз спрашивала сервер: после обновления решает, открывать ли вкладку
+# отметка «запущен установщик обновления»: следующий старт сервера — уже новой версии, и старая вкладка ждёт его сама
+UPDATE_MARK = os.path.join(config.WORK, "update-pending.json")
 
 
 def _git(*args, timeout=60):
@@ -634,14 +640,222 @@ def _commits(rng):
 
 
 @app.get("/api/version")
-def version():
-    head = _git("rev-parse", "--short", "HEAD")[1] if os.path.isdir(os.path.join(ROOT, ".git")) else ""
-    return {"head": head, "started": STARTED}
+def version(probe: int = 0):
+    """head — короткий sha (как раньше), started — время запуска: по его смене страница понимает, что сервер новый.
+    installed/version/tag — из installed.json установленной версии. probe=1 — опрос самого сервера, не страницы."""
+    if not probe:
+        SEEN["t"] = time.time()
+    v = config.version_info()
+    return {"head": v["commit"], "started": STARTED, **v, "data": config.DATA}
+
+
+# --- установленная версия: обновление из GitHub Releases (ассет propgen-setup-<версия>.exe, тихая установка)
+# Без токена у GitHub лимит 60 запросов в час на IP — ответ кэшируем на 10 минут; ошибку сети — на минуту.
+RELEASES_API = os.environ.get("PROPGEN_RELEASES_URL") or "https://api.github.com/repos/creatoff/propgen/releases/latest"
+RELEASE_TTL = 600
+SETUP_RX = re.compile(r"^propgen-setup-[0-9A-Za-z.\-_]+\.exe$", re.I)
+INSTALLER_ARGS = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"]
+_REL = {"t": 0.0, "ttl": RELEASE_TTL, "data": None, "error": None}
+REL_DL = {"active": False, "done": 0, "total": 0, "error": ""}  # скачивание установщика — для полоски в интерфейсе
+
+
+def _semver(tag):
+    """v1.2.3 · 1.2 · 1.3.0-beta.1 → ключ сравнения; предрелиз ниже финальной версии с тем же номером. None — не версия."""
+    m = re.match(r"^\s*[vV]?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-.]?([0-9A-Za-z][0-9A-Za-z.\-]*))?", str(tag or ""))
+    if not m:
+        return None
+    return tuple(int(x or 0) for x in m.groups()[:3]) + ((0, m[4]) if m[4] else (1, ""))
+
+
+def _release_notes(body, limit=20):
+    """Список изменений из текста релиза: пункты markdown-списка; без списка — непустые строки, кроме заголовков.
+    У автособранных заметок GitHub срезаем хвост « by @автор in https://…/pull/N» и строку «Full Changelog»."""
+    rows = [l.strip() for l in str(body or "").replace("\r", "").split("\n")]
+    items = [re.sub(r"^[-*+]\s+", "", l) for l in rows if re.match(r"^[-*+]\s+", l)]
+    if not items:
+        items = [l for l in rows if l and not l.startswith(("#", "---", "**Full Changelog"))]
+    out = []
+    for s in items:
+        s = re.sub(r"\s+by @\S+ in https?://\S+$", "", s)
+        s = re.sub(r"\*\*|__|`", "", s).strip()
+        if s and not s.startswith("Full Changelog"):
+            out.append(s[:200])
+    return out[:limit]
+
+
+def _gh_latest():
+    """(данные последнего релиза, ошибка). {} — релизов ещё нет (GitHub отвечает 404), это не ошибка."""
+    import urllib.error
+    import urllib.request
+    now = time.time()
+    if _REL["t"] and now - _REL["t"] < _REL["ttl"]:
+        return _REL["data"], _REL["error"]
+    data, err, ttl = None, None, RELEASE_TTL
+    req = urllib.request.Request(RELEASES_API, headers={"User-Agent": "propgen-updater",
+                                                        "Accept": "application/vnd.github+json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            data = {}
+        elif e.code in (403, 429):
+            err = "GitHub временно ограничил число запросов — проверю позже"
+        else:
+            err, ttl = f"GitHub ответил {e.code}", 60
+    except Exception as e:  # noqa: BLE001 — нет сети, DNS, таймаут, битый JSON
+        err, ttl = f"нет связи с GitHub: {e}", 60
+    _REL.update(t=now, ttl=ttl, data=data, error=err)
+    return data, err
+
+
+def _release_info(fetch):
+    """Ответ GET /api/update для установленной версии — в той же форме, что для git (behind, head, dirty…),
+    плюс mode="release", latest, asset_url, size. fetch=0 — только из кэша, без похода на GitHub."""
+    v = config.version_info()
+    cur = v["version"] or v["tag"].lstrip("vV")
+    res = {"git": False, "mode": "release", "installed": True, "version": cur, "tag": v["tag"],
+           "head": {"hash": v["tag"] or cur, "subject": f"propgen {cur}".strip(), "date": v["built"]},
+           "branch": "", "upstream": "GitHub Releases", "behind": [], "ahead": 0, "dirty": [],
+           "latest": None, "checked": False, "download": dict(REL_DL)}
+    if not fetch and not _REL["t"]:
+        return res
+    data, err = _gh_latest() if fetch else (_REL["data"], _REL["error"])
+    res["checked"] = True
+    if err:
+        res["fetch_error"] = err
+        return res
+    if not data or not data.get("tag_name"):
+        res["no_releases"] = True
+        return res
+    tag = data["tag_name"]
+    asset = next((a for a in data.get("assets") or [] if SETUP_RX.match(a.get("name") or "")), None)
+    res.update(latest=tag.lstrip("vV"), latest_tag=tag, name=data.get("name") or tag, published=data.get("published_at"),
+               html_url=data.get("html_url"), asset_url=asset and asset.get("browser_download_url"),
+               asset_name=asset and asset.get("name"), size=asset and asset.get("size"), digest=asset and asset.get("digest"))
+    if (_semver(tag) or (0,)) > (_semver(cur) or (0,)):
+        notes = _release_notes(data.get("body"))
+        res["notes"] = notes
+        # интерфейс рисует behind как список коммитов — здесь это пункты из текста релиза (или его название)
+        res["behind"] = [{"hash": tag, "subject": s, "msg": s, "date": data.get("published_at")} for s in (notes or [res["name"]])]
+        if not asset:
+            res["asset_error"] = f"в релизе {tag} нет установщика propgen-setup-*.exe"
+    return res
+
+
+def _download(url, dst, size, digest=None):
+    """Установщик — в dst через .part; размер обязан совпасть с заявленным GitHub (обрыв связи), sha256 — если он дан."""
+    import hashlib
+    import urllib.request
+    REL_DL.update(active=True, done=0, total=size, error="")
+    h = hashlib.sha256()
+    req = urllib.request.Request(url, headers={"User-Agent": "propgen-updater"})
+    with urllib.request.urlopen(req, timeout=60) as r, open(dst + ".part", "wb") as f:
+        while True:
+            chunk = r.read(1 << 20)
+            if not chunk:
+                break
+            f.write(chunk)
+            h.update(chunk)
+            REL_DL["done"] += len(chunk)
+    got = os.path.getsize(dst + ".part")
+    if got != size:
+        os.remove(dst + ".part")
+        raise RuntimeError(f"скачалось {got} байт вместо {size} — связь оборвалась, попробуйте ещё раз")
+    if digest and str(digest).startswith("sha256:") and h.hexdigest() != digest[7:].lower():
+        os.remove(dst + ".part")
+        raise RuntimeError("контрольная сумма установщика не совпала — файл повреждён, попробуйте ещё раз")
+    os.replace(dst + ".part", dst)
+
+
+def _have_file(path, size, digest=None):
+    """Уже скачанный раньше установщик (отказали из-за задачи в очереди) — не качаем второй раз."""
+    if not os.path.exists(path) or os.path.getsize(path) != size:
+        return False
+    if digest and str(digest).startswith("sha256:"):
+        import hashlib
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest() == digest[7:].lower()
+    return True
+
+
+def _update_release():
+    """Скачать установщик нового релиза в %TEMP%, запустить его отсоединённо с тихими ключами и выйти с кодом 0:
+    окно start.cmd закроется, установщик заменит файлы и сам запустит start.cmd новой версии. Данные (config.DATA)
+    установщик не трогает. Отказ — при идущей задаче (как у git) и если нечего или нечем обновляться."""
+    import tempfile
+    if not config.WIN:
+        raise HTTPException(400, "обновление установщиком есть только для Windows")
+    with lock:
+        if state["current"] or state["queued"]:
+            raise HTTPException(409, "идёт задача — обнови, когда очередь опустеет")
+    if REL_DL["active"]:
+        raise HTTPException(409, "установщик уже скачивается")
+    info = _release_info(fetch=1)
+    if info.get("fetch_error"):
+        raise HTTPException(502, "не удалось спросить GitHub: " + info["fetch_error"])
+    if not info["behind"]:
+        return {"updated": False, **info}
+    if not info.get("asset_url"):
+        raise HTTPException(409, info.get("asset_error") or "в релизе нет установщика")
+    size = int(info.get("size") or 0)
+    if size <= 0:
+        raise HTTPException(502, "GitHub не сообщил размер установщика — скачай его со страницы релиза вручную")
+    folder = os.path.join(tempfile.gettempdir(), "propgen-update")
+    os.makedirs(folder, exist_ok=True)
+    dst = os.path.join(folder, os.path.basename(info["asset_name"]))
+    if not _have_file(dst, size, info.get("digest")):
+        try:
+            _download(info["asset_url"], dst, size, info.get("digest"))
+        except Exception as e:  # noqa: BLE001 — 404, обрыв, нехватка места: сервер живёт дальше, текст — в интерфейс
+            REL_DL.update(active=False, error=str(e)[-400:])
+            raise HTTPException(502, f"установщик не скачался: {str(e)[-400:]}")
+    REL_DL["active"] = False
+    with lock:  # пока качали (минуты), могли поставить задачу — её оборвал бы выход сервера
+        if state["current"] or state["queued"]:
+            raise HTTPException(409, "пока скачивал обновление, появилась задача — обнови, когда очередь опустеет")
+    # /LOG — журнал установки рядом с данными: если новая версия не поднялась, его заберёт debug.cmd
+    argv = [dst, *INSTALLER_ARGS, "/LOG=" + os.path.join(config.WORK, "update-install.log")]
+    flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    kw = {"cwd": folder, "close_fds": True, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+          "stderr": subprocess.DEVNULL}
+    try:
+        try:  # из задачи-«job» консоли — наружу, иначе установщик умрёт вместе с окном start.cmd
+            subprocess.Popen(argv, creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB, **kw)
+        except OSError:
+            subprocess.Popen(argv, creationflags=flags, **kw)
+    except OSError as e:
+        raise HTTPException(500, f"установщик не запустился: {e}")
+    try:
+        with open(UPDATE_MARK, "w", encoding="utf-8") as f:
+            json.dump({"t": time.time(), "from": info["version"], "to": info["latest"]}, f)
+    except OSError:
+        pass
+    # код 0, а не 3: start.cmd не должен поднимать старую версию — новую запустит установщик
+    threading.Timer(1.0, lambda: os._exit(0)).start()
+    return {"updated": True, "mode": "release", "version": info["latest"], "restarting": True}
+
+
+def _after_update():
+    """Отметка о запущенном установщике (свежая — до получаса): забираем её один раз при старте новой версии."""
+    try:
+        with open(UPDATE_MARK, encoding="utf-8") as f:
+            mark = json.load(f)
+        os.remove(UPDATE_MARK)
+        return mark if time.time() - float(mark.get("t") or 0) < 1800 else None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
 
 
 @app.get("/api/update")
 def update_info(fetch: int = 0):
-    """Есть ли новые коммиты в репозитории. fetch=1 — сначала спросить GitHub (несколько секунд)."""
+    """Есть ли новые коммиты в репозитории (или новый релиз у установленной версии).
+    fetch=1 — сначала спросить GitHub (несколько секунд)."""
+    if config.INSTALLED:
+        return _release_info(fetch)
     if not os.path.isdir(os.path.join(ROOT, ".git")) or not shutil.which("git"):
         return {"git": False}
     res = {"git": True}
@@ -675,7 +889,10 @@ def _restart():
 
 @app.post("/api/update")
 def do_update():
-    """git pull --ff-only → при изменении requirements.txt — pip install → перезапуск сервера."""
+    """git pull --ff-only → при изменении requirements.txt — pip install → перезапуск сервера.
+    У установленной версии — установщик нового релиза (_update_release)."""
+    if config.INSTALLED:
+        return _update_release()
     info = update_info(fetch=1)
     if not info["git"]:
         raise HTTPException(400, "propgen установлен не через git — скачай новую версию с GitHub вручную")
@@ -923,6 +1140,7 @@ if __name__ == "__main__":
                         s.update(status="error", error="прервано перезапуском сервера")
             update(pid, fix)
     port = int(os.environ.get("PORT") or config.get("port"))
+    after_update = _after_update()
     if os.environ.get("PROPGEN_OPEN") == "1":
         # браузер — когда сервер уже отвечает: start.cmd открывал его заранее, и первым экраном была ошибка соединения
         def open_when_ready():
@@ -930,10 +1148,18 @@ if __name__ == "__main__":
             import webbrowser
             for _ in range(300):
                 try:
-                    urllib.request.urlopen(f"http://127.0.0.1:{port}/api/version", timeout=1).close()
+                    urllib.request.urlopen(f"http://127.0.0.1:{port}/api/version?probe=1", timeout=1).close()
                     break
                 except Exception:  # noqa: BLE001
                     time.sleep(0.2)
+            if after_update:
+                # start.cmd после обновления запустил установщик, а не человек: вкладка, с которой обновлялись, ждёт
+                # нас сама (опрашивает /api/version раз в секунду) — вторую открываем, только если её закрыли
+                t0 = time.time()
+                while time.time() - t0 < 15:
+                    if SEEN["t"]:
+                        return
+                    time.sleep(0.5)
             webbrowser.open(f"http://127.0.0.1:{port}/")
         threading.Thread(target=open_when_ready, daemon=True).start()
     print(f"propgen: http://127.0.0.1:{port}", flush=True)

@@ -1,6 +1,6 @@
 """Описание пропа через OpenAI API — экономно: один запрос (перевод заметки + детали с кадра одним JSON),
 картинка 512 px в режиме detail=low, короткий ответ, кэш по заметке и кадру, учёт расхода и дневной потолок.
-Ключ — одной строкой в .openai_key в корне проекта (в .gitignore; никуда не выводится).
+Ключ — в config.json или одной строкой в .openai_key в папке данных (config.DATA; в .gitignore; никуда не выводится).
 
 python tools/llm_openai.py --img crop.png --notes "ржавая стела ..." [--model gpt-4.1-nano] [--kind t2i]
 """
@@ -18,9 +18,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402 — ключ, модель и лимит — из настроек propgen
 import llm  # noqa: E402 — общая с локальной моделью инструкция «по тексту» и фраза о кадре
 
-KEY_FILE = os.path.join(ROOT, ".openai_key")  # старое место ключа; основное — config.json
-USAGE = os.path.join(ROOT, "work", "llm_usage.jsonl")
-CACHE = os.path.join(ROOT, "work", "llm_cache.json")
+KEY_FILE = config.KEY_FILE  # старое место ключа; основное — config.json
+# в папке данных, а не рядом с кодом: установленную версию обновление заменяет целиком (см. config.DATA)
+USAGE = os.path.join(config.WORK, "llm_usage.jsonl")
+CACHE = os.path.join(config.WORK, "llm_cache.json")
 def MODEL():
     return config.get("openai_model") or "gpt-4.1-mini"  # лучшие описания из дешёвых, ~$0.0003 за проп
 

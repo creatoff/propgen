@@ -16,13 +16,20 @@
 
 ## Запуск
 
-- `setup.cmd` — venv (Python 3.10–3.12) + `requirements.txt` + отчёт doctor. `start.cmd` — сервер и браузер.
-- Сервер: `.venv\Scripts\python server.py` → http://127.0.0.1:8795 (порт — `config.json` → `port`).
+- `setup.cmd` — venv (Python 3.10–3.12) + `requirements.txt` + отчёт doctor (только git-режим). `start.cmd` — сервер и
+  браузер; Python — `python\python.exe` (установленная версия), иначе `.venv\Scripts\python.exe`. Так же выбирает `debug.cmd`.
+- Сервер: `.venv\Scripts\python server.py` → http://127.0.0.1:8795 (порт — `config.json` → `port`, env `PORT` — поверх).
+- **Два режима.** git-клон: данные (`config.json`, `.openai_key`, `work\`) — в папке проекта. Установленный (есть
+  `installed.json` = {version, tag, commit, built}; код в `%LOCALAPPDATA%\Programs\propgen`, рядом `python\`): данные —
+  в `%LOCALAPPDATA%\propgen`, код целиком заменяет следующее обновление. `PROPGEN_DATA` переопределяет папку данных в
+  любом режиме (проверка копии: `PORT=8799 PROPGEN_DATA=<tmp>`). В коде — только `config.DATA` / `config.WORK`
+  (`config.INSTALLED`, `config.version_info()`, `config.app_python()`), **никогда `ROOT/work` или `ROOT/config.json`**:
+  `ROOT` — только для файлов приложения (`tools/`, `web/`, `examples/`, `web/hdri` — их качает doctor, установщик их не стирает).
 - Нужен **запущенный ComfyUI** (адрес — `comfy_url`; Desktop по умолчанию 8000, portable/git — 8188) и Blender 4.2+.
 
 ## Настройки
 
-- Всё машинное — в `config.json` (в .gitignore) через `tools/config.py`: `config.get(key)`, `config.save({...})`,
+- Всё машинное — в `config.json` папки данных (в .gitignore) через `tools/config.py`: `config.get(key)`, `config.save({...})`,
   `config.find_blender()`, `config.find_lms()`, `config.openai_key()`. Пустое значение = автопоиск.
   **Не зашивай пути, адреса, порты и ключи в код.** Поля и умолчания — `config.DEFAULTS`.
 - Экран «⚙ Настройки» в интерфейсе = `GET/POST /api/settings`, `POST /api/settings/test_openai`, `GET /api/doctor`,
@@ -32,7 +39,7 @@
   `config.comfy_launch_plan()`: exe Desktop 1.x, `.bat` portable, `main.py` (python рядом). У Desktop 2 («Comfy Desktop»)
   exe сам сервер не поднимает — запускается его установка напрямую с аргументами из `%APPDATA%\Comfy Desktop`.
 - Текстовая модель: `llm_mode` = `auto` (OpenAI при наличии ключа, иначе LM Studio) · `openai` · `local` · `off`.
-  OpenAI — `tools/llm_openai.py` (кэш `work/llm_cache.json`, расход `work/llm_usage.jsonl`, дневной лимит).
+  OpenAI — `tools/llm_openai.py` (кэш `WORK/llm_cache.json`, расход `WORK/llm_usage.jsonl`, дневной лимит).
   Локально — `tools/llm.py`: Gemma-3-4B через LM Studio; перед ней ComfyUI выгружает модели (`/free`), поэтому
   локальный вызов идёт **только через очередь задач**. Qwen3/3.5 в LM Studio не годятся — «думают» и отвечают пусто.
 - **Ключ OpenAI** (`config.json` → `openai_key` или файл `.openai_key`) никогда не выводи в чат, логи, коммиты;
@@ -42,7 +49,7 @@
 
 ## Как устроено
 
-- `server.py` (FastAPI): пропы в `work/props/<id>/`, **одна очередь задач** (видеокарта одна): `views` → `mesh` → `lowpoly`
+- `server.py` (FastAPI): пропы в `work/props/<id>/` папки данных (`config.WORK`), **одна очередь задач** (видеокарта одна): `views` → `mesh` → `lowpoly`
   (+ `describe` для локальной LLM). Шаги — отдельные процессы `tools/*.py`; результат пишется в `<шаг>.new/` и
   подменяет старый только после успеха. `POST /api/props/<id>/run {step}`; без рамки (`cropped`) — 409, `force: true` в обход.
 - Фронт: `views_engine` = `qwen` (Qwen-Image-Edit-2511, 13 ГБ, часть весов в RAM) или `klein` (FLUX.2 Klein 4B fp8, 4 ГБ,
@@ -56,12 +63,30 @@
   `requirements.txt` — pip, затем перезапуск. `start.cmd` — «надзиратель»: сервер выходит с кодом 3 → запускается снова;
   без него (`PROPGEN_SUPERVISED` не задан) перезапускает `tools/restart.py`. Отказ при идущей задаче и локальных правках.
   Браузер открывает сам сервер, когда уже отвечает (`PROPGEN_OPEN=1` из `start.cmd`, после обновления — нет).
+- Обновление установленной версии — GitHub Releases (`server._release_info` / `_update_release`): GET спрашивает
+  `releases/latest` (без токена, лимит 60/ч → кэш 10 мин; 404 = «выпусков нет», не ошибка), сравнивает semver тега с
+  `installed.json` и отвечает в той же форме, что для git, плюс `mode: "release"`, `latest`, `asset_url`, `size`
+  (`behind` — пункты из текста выпуска). POST качает `propgen-setup-*.exe` в `%TEMP%\propgen-update` (размер и sha256
+  `digest` сверяются; процент — `download` в GET), запускает его отсоединённо с `/VERYSILENT /SUPPRESSMSGBOXES
+  /NORESTART /CLOSEAPPLICATIONS /LOG=<WORK>\update-install.log` и выходит с кодом **0** (start.cmd закрывается, новый
+  запускает установщик). `WORK\update-pending.json` — отметка: новый сервер не открывает вторую вкладку, если старая
+  страница сама опрашивает его 15 с. `PROPGEN_RELEASES_URL` — подмена адреса для проверок (можно `file:///…json`).
+  `GET /api/version` → `head`, `started`, `installed`, `version`, `tag`, `data`.
   Интерфейс держит заставку `#splash` до загрузки пропов и настроек (`boot()` в app.js) и показывает её снова,
   если `poll()` дважды подряд не достучался до сервера; `/api/doctor` идёт уже за заставкой.
 - `POST /api/props/<id>/export {height_cm, sources}` → `tools/pack.py` + Blender `tools/export.py` → zip по схеме Poly Haven.
 - `web/` — статика без сборки: `app.js` (вся логика), `controls.js` (свои select/range/number поверх нативных),
   `index.html`, `style.css`. three.js с CDN. Просмотрщик 3D создаётся только на вкладке «Модель» при пустой очереди
   и выгружается целиком (WebGL-контекст) во время задач — видеопамять нужна ComfyUI.
+- Инсталлятор: `tools/build/build.py` (stdlib) собирает `build\app` = будущий `{app}`: файлы `git ls-files` (без
+  `.claude/ .github/ installer/ tools/build/ shots/ setup.cmd`) + `python\` (python-build-standalone 3.12, версия и sha256
+  закреплены в `PBS_*`) с `requirements.txt` + `installed.json`; качает `vc_redist`, проверяет (импорт каждой зависимости
+  отдельным процессом, `doctor --json`, сервер на порту 8810+ с `PROPGEN_DATA` во временной папке) и зовёт Inno Setup →
+  `dist\propgen-setup-<версия>.exe`. `--install-test <exe>` — установка → обновление поверх запущенного → удаление.
+  `installer/propgen.iss` (UTF-8 с BOM, AppId не менять): per-user в `%LOCALAPPDATA%\Programs\propgen`, перед установкой
+  гасит `python\*.exe` и `start.cmd` из `{app}`, `[InstallDelete]` чистит код и `python\` целиком (не `web\hdri\*_4k.hdr`),
+  vc_redist ставит при < 14.40, после тихой установки сам запускает `start.cmd` (`/NOSTART` — нет). Иконка `installer/propgen.ico`
+  — `tools/build/make_icon.py`. `.github/workflows/release.yml`: тег `v*` → Release с exe; workflow_dispatch — только артефакт.
 
 ## Правила работы
 

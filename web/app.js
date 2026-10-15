@@ -1361,11 +1361,43 @@ const commitList = list => '<ul class="commits">' + list.map(c =>
   `<li><code>${esc(c.hash)}</code><span class="s" title="${esc(c.subject)}">${esc(c.subject)}</span><span class="d">${esc(fmtDate(c.date))}</span></li>`).join("") + "</ul>";
 const dirtyNote = u => u.dirty?.length ? `<div class="upd-warn">⚠ Есть локальные правки — обновление их затрёт, поэтому сервер откажется обновляться: ${esc(u.dirty.join(", "))}</div>` : "";
 const runNote = () => (updRun.msg ? `<div class="upd-msg">${esc(updRun.msg)}</div>` : "") + (updRun.err ? `<div class="upd-err">✗ ${esc(updRun.err)}</div>` : "");
+// Установленная версия (инсталлятор) обновляется не из git, а выпусками GitHub: сервер отвечает mode: "release",
+// behind — пункты из текста выпуска (hash = тег), latest — новая версия, asset_url/size — установщик.
+const isRel = u => u?.mode === "release";
+const mb = b => b ? `${Math.max(1, Math.round(b / 2 ** 20))} МБ` : "";
+const noteList = list => '<ul class="commits notes">' + list.map(c => `<li><span>${esc(c.subject)}</span></li>`).join("") + "</ul>";
+
+function renderRelease(u, box, go) {
+  const behind = u.behind || [];
+  $("#updHow").textContent = "Новая версия — выпуск на GitHub: установщик скачается и тихо поставит её поверх, затем propgen запустится сам.";
+  let html = `<div class="upd-cur"><span class="lbl">Установлена</span><div class="v"><code>${esc(u.tag || u.version || "?")}</code>` +
+    `<span>propgen ${esc(u.version || "")}</span></div><span class="hint">${u.head?.date ? "собрана " + esc(fmtDate(u.head.date)) + " · " : ""}` +
+    "обновления — выпуски на GitHub</span></div>";
+  if (u.fetch_error) html += `<div class="upd-warn">Не удалось спросить GitHub: ${esc(u.fetch_error)}</div>`;
+  else if (!u.checked) html += '<div class="hint">Ещё не проверяли — нажми «Проверить».</div>';
+  else if (u.no_releases) html += '<div class="hint">На GitHub пока нет выпусков — обновляться не на что.</div>';
+  else if (!behind.length) html += `<div class="upd-ok">✓ Это последняя версия${u.latest ? " (" + esc(u.latest) + ")" : ""}</div>`;
+  else {
+    html += `<div class="fg-h">Доступна версия ${esc(u.latest)}${u.published ? " · " + esc(fmtDate(u.published)) : ""}</div>` + noteList(behind);
+    if (u.asset_error) {
+      const link = u.html_url ? `: <a href="${esc(u.html_url)}" target="_blank" rel="noopener">страница выпуска</a>` : "";
+      html += `<div class="upd-warn">⚠ ${esc(u.asset_error)} — скачай новую версию вручную${link}</div>`;
+    } else html += `<div class="hint">Установщик${u.size ? " " + mb(u.size) : ""} скачается и обновит propgen; настройки и пропы останутся на месте.</div>`;
+    go.hidden = !!u.asset_error;
+  }
+  box.innerHTML = html + runNote();
+  if (updRun.busy) go.hidden = false;
+  go.disabled = updRun.busy;
+  go.textContent = updRun.busy ? "Обновляюсь…" : "Обновить и перезапустить";
+  $("#navVer").textContent = behind.length ? `новая: ${u.latest}` : "версия " + (u.version || "?");
+  setDot("update", behind.length ? "new" : "");
+}
 
 function renderUpdate(u = updInfo) {
   const box = $("#updBox"), go = $("#updGo");
   go.hidden = true;
   if (!u) return;
+  if (isRel(u)) return renderRelease(u, box, go);
   if (!u.git) {
     box.innerHTML = '<div class="hint">propgen установлен не через git — новую версию скачай с GitHub вручную.</div>';
     $("#navVer").textContent = "не через git"; setDot("update"); return;
@@ -1395,13 +1427,17 @@ function renderBadge(u = updInfo) {
   $("#updWrap").hidden = !n && !updRun.busy;
   if ($("#updWrap").hidden) closeUpdPop();
   updBadge.classList.toggle("busy", updRun.busy);
-  $("#updBadgeTxt").textContent = updRun.busy ? "Обновляюсь…" : `Обновление · ${n}`;
-  updBadge.title = updRun.busy ? "Обновляю propgen — страница перезагрузится сама" : `Доступна новая версия propgen: ${n} ${plural(n, "новый коммит", "новых коммита", "новых коммитов")}`;
-  $("#updPopTitle").textContent = updRun.busy ? "Обновляю propgen…" : "Доступна новая версия";
-  $("#updPopSub").textContent = n ? `сейчас ${u.head?.hash || "?"} · ${n} ${plural(n, "новый коммит", "новых коммита", "новых коммитов")}` : "";
-  $("#updPopList").innerHTML = n ? commitList(behind) : "";
-  $("#updPopNote").innerHTML = (u ? dirtyNote(u) : "") + runNote();
+  const rel = isRel(u);  // у выпусков вместо числа коммитов — номер новой версии
+  $("#updBadgeTxt").textContent = updRun.busy ? "Обновляюсь…" : `Обновление · ${rel ? u.latest : n}`;
+  updBadge.title = updRun.busy ? "Обновляю propgen — страница перезагрузится сама"
+    : rel ? `Доступна версия propgen ${u.latest}` : `Доступна новая версия propgen: ${n} ${plural(n, "новый коммит", "новых коммита", "новых коммитов")}`;
+  $("#updPopTitle").textContent = updRun.busy ? "Обновляю propgen…" : rel && n ? `Доступна версия ${u.latest}` : "Доступна новая версия";
+  $("#updPopSub").textContent = !n ? "" : rel ? `сейчас ${u.version || "?"}${u.size ? " · установщик " + mb(u.size) : ""}`
+    : `сейчас ${u.head?.hash || "?"} · ${n} ${plural(n, "новый коммит", "новых коммита", "новых коммитов")}`;
+  $("#updPopList").innerHTML = n ? (rel ? noteList(behind) : commitList(behind)) : "";
+  $("#updPopNote").innerHTML = (u && !rel ? dirtyNote(u) : "") + (rel && u.asset_error ? `<div class="upd-warn">⚠ ${esc(u.asset_error)}</div>` : "") + runNote();
   const go = $("#updPopGo");
+  go.hidden = rel && !!u.asset_error && !updRun.busy;
   go.disabled = updRun.busy;
   go.textContent = updRun.busy ? "Обновляюсь…" : "Обновить и перезапустить";
 }
@@ -1428,23 +1464,38 @@ async function checkUpdate(fetch = 1, quiet = false) {
 $("#updCheck").onclick = () => checkUpdate(1);
 
 // git pull → перезапуск сервера → ждём, пока /api/version.started сменится, и перезагружаем страницу (свежий интерфейс).
-// Отказ сервера (409: идёт задача, локальные правки) показываем там же, где нажали — в поповере и в разделе.
+// Установленная версия: сервер качает установщик выпуска (POST ждёт конца загрузки, процент — опросом GET /api/update),
+// запускает его и выходит; установщик заменяет файлы и сам запускает start.cmd — ждём так же, только дольше.
+// Отказ сервера (409: идёт задача, локальные правки; 502: GitHub, обрыв загрузки) показываем там же, где нажали.
 async function runUpdate() {
   if (updRun.busy) return;
-  Object.assign(updRun, { busy: true, msg: "Скачиваю изменения…", err: "" }); renderUpd();
+  const rel = isRel(updInfo);
+  Object.assign(updRun, { busy: true, msg: rel ? "Скачиваю установщик…" : "Скачиваю изменения…", err: "" }); renderUpd();
+  let prog = 0;
   try {
     const before = await api("/api/version");
+    if (rel) prog = setInterval(async () => {
+      try {
+        const d = (await api("/api/update?fetch=0")).download;
+        if (d?.active && d.total && updRun.busy) { updRun.msg = `Скачиваю установщик: ${Math.floor(100 * d.done / d.total)} % из ${mb(d.total)}`; renderUpd(); }
+      } catch {}
+    }, 1000);
     const r = await api("/api/update", json("POST", {}));
+    clearInterval(prog);
     if (!r.updated) { Object.assign(updRun, { busy: false, msg: "" }); updInfo = r; return renderUpd(); }
-    updRun.msg = `Скачано изменений: ${r.pulled}${r.pip && r.pip !== "ok" ? " · ⚠ pip: " + r.pip : ""}. Перезапускаюсь…`; renderUpd();
-    const t0 = Date.now();
+    updRun.msg = rel ? `Устанавливаю версию ${r.version} — страница перезагрузится сама, когда она запустится (обычно до пары минут)…`
+      : `Скачано изменений: ${r.pulled}${r.pip && r.pip !== "ok" ? " · ⚠ pip: " + r.pip : ""}. Перезапускаюсь…`;
+    renderUpd();
+    const t0 = Date.now(), limit = rel ? 10 * 60000 : 60000;
     const wait = async () => {
       try { const v = await api("/api/version"); if (v.started !== before.started) return location.reload(); } catch {}
-      if (Date.now() - t0 < 60000) return setTimeout(wait, 1000);
-      Object.assign(updRun, { busy: false, err: "Сервер не поднялся за минуту — запусти start.cmd вручную." }); renderUpd();
+      if (Date.now() - t0 < limit) return setTimeout(wait, 1000);
+      Object.assign(updRun, { busy: false, err: rel
+        ? "Новая версия не запустилась за 10 минут — запусти propgen ярлыком; журнал установки — work\\update-install.log в папке данных."
+        : "Сервер не поднялся за минуту — запусти start.cmd вручную." }); renderUpd();
     };
     setTimeout(wait, 1500);
-  } catch (e) { Object.assign(updRun, { busy: false, msg: "", err: e.message }); renderUpd(); }
+  } catch (e) { clearInterval(prog); Object.assign(updRun, { busy: false, msg: "", err: e.message }); renderUpd(); }
 }
 $("#updGo").onclick = runUpdate;
 $("#updPopGo").onclick = runUpdate;

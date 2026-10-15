@@ -268,6 +268,10 @@ def check_python():
             break
     res = {"ok": not missing and not crashed, "missing": missing + [c["name"] for c in crashed], "crashed": crashed,
            "python": sys.executable}
+    if missing and not crashed and config.INSTALLED:
+        # интерфейс без fix советует setup.cmd — у установленной версии его нет, зависимости ставит установщик
+        res["fix"] = (f"нет: {', '.join(missing)} — установка повреждена, поставьте propgen заново: "
+                      f"https://github.com/creatoff/propgen/releases/latest")
     if crashed:
         # 0xC0000005 при импорте нативного модуля на Windows — почти всегда устаревший Visual C++ Redistributable:
         # колёса собраны новой студией, а в процесс грузится старая msvcp140.dll из System32
@@ -275,6 +279,9 @@ def check_python():
         if any(c["code"] == "0xC0000005" for c in crashed):
             res["fix"] = (f"{names} падает при импорте (0xC0000005, нарушение доступа) — установите свежий Microsoft "
                           f"Visual C++ Redistributable x64: {VCREDIST}, затем перезапустите start.cmd")
+        elif config.INSTALLED:  # у установленной версии свой python\ — проще поставить propgen заново поверх
+            res["fix"] = (f"{names} падает при импорте ({crashed[0]['code']}) — переустановите propgen: скачайте "
+                          f"propgen-setup-*.exe со страницы https://github.com/creatoff/propgen/releases/latest")
         else:
             res["fix"] = (f"{names} падает при импорте ({crashed[0]['code']}) — переустановите: "
                           f".venv\\Scripts\\python -m pip install --force-reinstall {' '.join(PIP_NAME.get(c['name'], c['name']) for c in crashed)}")

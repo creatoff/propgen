@@ -1,6 +1,6 @@
 """Отладочный архив propgen: одна команда собирает всё, что нужно, чтобы понять чужую поломку по переписке.
 
-    python tools/debug.py            → work/debug-<дата-время>.zip (путь печатается последней строкой)
+    python tools/debug.py            → work/debug-<дата-время>.zip в папке данных (путь печатается последней строкой)
 
 Только stdlib: должен работать, когда не стоит .venv, не установлены зависимости и не запущен сервер —
 именно в этих случаях он нужнее всего. Тот же сборщик зовёт сервер (GET /api/debug → collect()).
@@ -24,10 +24,6 @@ import zipfile
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TOOLS)
-WORK = os.path.join(ROOT, "work")
-PROPS = os.path.join(WORK, "props")
-VENV_PY = os.path.join(ROOT, ".venv", "Scripts", "python.exe") if sys.platform == "win32" \
-    else os.path.join(ROOT, ".venv", "bin", "python")
 KEEP = 5  # столько последних debug-*.zip оставляем в work — кнопку могут нажать много раз
 
 sys.path.insert(0, TOOLS)
@@ -35,6 +31,19 @@ try:
     import config  # tools/config.py — тоже только stdlib
 except Exception:  # noqa: BLE001 — сломанный config.py не должен лишать нас остального отчёта
     config = None
+
+# режим и папка данных — как в config.py; без него (сломан) угадываем сами, чтобы архив всё равно собрался
+INSTALLED = config.INSTALLED if config else os.path.exists(os.path.join(ROOT, "installed.json"))
+DATA = config.DATA if config else (os.path.join(os.environ.get("LOCALAPPDATA", ""), "propgen") if INSTALLED else ROOT)
+WORK = os.path.join(DATA, "work")
+PROPS = os.path.join(WORK, "props")
+# Python приложения: встроенный python\ установленной версии, иначе .venv git-клона (после setup.cmd)
+if sys.platform == "win32":
+    VENV_PY = next((p for p in (os.path.join(ROOT, "python", "python.exe"), os.path.join(ROOT, ".venv", "Scripts", "python.exe"))
+                    if os.path.exists(p)), os.path.join(ROOT, ".venv", "Scripts", "python.exe"))
+else:
+    VENV_PY = os.path.join(ROOT, ".venv", "bin", "python")
+PY_NAME = "python\\" if os.path.basename(os.path.dirname(VENV_PY)) == "python" else ".venv"
 
 SECRET_FIELD = re.compile(r"key|token|secret|passw|auth", re.I)
 # узнаваемые ключи в логах и чужих выводах: OpenAI (sk-, sk-proj-), Hugging Face (hf_), GitHub (ghp_ и т.п.)
@@ -63,7 +72,7 @@ def _secrets():
     except Exception:  # noqa: BLE001
         pass
     try:
-        with open(os.path.join(ROOT, "config.json"), encoding="utf-8") as f:
+        with open(os.path.join(DATA, "config.json"), encoding="utf-8") as f:
             raw = json.load(f)
         out |= {str(v) for k, v in raw.items() if SECRET_FIELD.search(k) and isinstance(v, str)}
     except Exception:  # noqa: BLE001
@@ -142,13 +151,28 @@ def sec_system(b):
     b.line(f"Собран:      {datetime.datetime.now().astimezone():%Y-%m-%d %H:%M:%S %z}")
     b.line(f"ОС:          {platform.platform()} · {platform.machine()} · ядер {os.cpu_count()}")
     b.line(f"Проект:      {ROOT}")
+    if INSTALLED:
+        try:
+            with open(os.path.join(ROOT, "installed.json"), encoding="utf-8") as f:
+                inst = json.load(f)
+        except Exception as e:  # noqa: BLE001
+            inst = {"error": str(e)}
+        b.add("installed.json", inst)
+        b.line(f"Режим:       установлен — версия {inst.get('version') or '?'} ({inst.get('tag') or '—'}, "
+               f"коммит {str(inst.get('commit') or '—')[:10]}, собран {inst.get('built') or '?'})")
+    else:
+        b.line("Режим:       git-клон (setup.cmd), версия — коммит в строке git")
+    same = os.path.normcase(os.path.abspath(DATA)) == os.path.normcase(ROOT)
+    b.line(f"Данные:      {DATA}" + (" (= папка проекта)" if same else ""))
     b.line(f"Python:      {sys.version.split()[0]} — {sys.executable}")
     if os.path.exists(VENV_PY):
         try:
             v = run([VENV_PY, "--version"], 20)[1]
         except Exception as e:  # noqa: BLE001
             v = f"не запускается: {e}"
-        b.line(f".venv:       есть — {v}")
+        b.line(f"{PY_NAME + ':':<13}есть — {v}")
+    elif INSTALLED:
+        b.line("python\\:     НЕТ — установка повреждена, поставьте propgen заново")
     else:
         b.line(".venv:       НЕТ — нужно запустить setup.cmd")
     env = {k: v for k, v in os.environ.items() if k.startswith(("PROPGEN", "CUDA", "PYTORCH", "HF_", "COMFY"))
@@ -158,6 +182,8 @@ def sec_system(b):
 
 
 def sec_git(b):
+    if INSTALLED:
+        return  # установленная версия обновляется из GitHub Releases, git ей не нужен; версия — в строке «Режим»
     if not shutil.which("git"):
         b.line("git:         не установлен (обновление из интерфейса не заработает)")
         return
@@ -317,7 +343,8 @@ def sec_server(b):
         b.line(f"Сервер:      propgen на {base} не отвечает ({e.__class__.__name__}) — запущен ли start.cmd?")
         return
     started = datetime.datetime.fromtimestamp(v["started"]).strftime("%Y-%m-%d %H:%M") if v.get("started") else "?"
-    b.line(f"Сервер:      {base} отвечает, коммит {v.get('head') or '—'}, запущен {started}")
+    ver = f"версия {v.get('version') or '?'}" if v.get("installed") else f"коммит {v.get('head') or '—'}"
+    b.line(f"Сервер:      {base} отвечает, {ver}, запущен {started}")
     try:
         q = http_json(base + "/api/queue", 5)
         b.add("server_queue.json", q)
@@ -328,18 +355,19 @@ def sec_server(b):
 
 
 def sec_doctor(b):
-    """doctor из .venv: его пункт «python» проверяет зависимости того интерпретатора, в котором запущен."""
+    """doctor из python приложения (.venv или встроенный python\\): его пункт «python» проверяет зависимости того
+    интерпретатора, в котором запущен."""
     in_venv = os.path.exists(VENV_PY) and os.path.normcase(os.path.abspath(sys.executable)) == os.path.normcase(VENV_PY)
     # всегда отдельным процессом, если есть .venv: падение нативного модуля внутри doctor не должно убить сбор архива
     if os.path.exists(VENV_PY):
         rc, out, err = run([VENV_PY, os.path.join(TOOLS, "doctor.py"), "--json"], 400)
         try:
             r = json.loads(out)
-            how = ".venv (отдельным процессом)"
+            how = f"{PY_NAME} (отдельным процессом)"
         except ValueError:
-            b.add("doctor.json", {"error": "doctor.py --json из .venv не отдал JSON", "rc": rc,
+            b.add("doctor.json", {"error": f"doctor.py --json из {PY_NAME} не отдал JSON", "rc": rc,
                                   "stdout": out[-4000:], "stderr": err[-4000:]})
-            b.line("Doctor:      из .venv упал — подробности в doctor.json")
+            b.line(f"Doctor:      из {PY_NAME} упал — подробности в doctor.json")
             return
     else:
         try:
@@ -349,7 +377,7 @@ def sec_doctor(b):
             b.line("Doctor:      не импортируется — подробности в doctor.json")
             return
         r = doctor.check_all()
-        how = "этот Python" + ("" if in_venv else " (без .venv — пункт python про системный Python)")
+        how = "этот Python" + ("" if in_venv else " (без python приложения — пункт python про системный Python)")
     b.add("doctor.json", r)
     m = r.get("minimum") or {}
     if m.get("ok"):
@@ -370,7 +398,7 @@ def sec_doctor(b):
 
 
 def sec_config(b):
-    path = os.path.join(ROOT, "config.json")
+    path = os.path.join(DATA, "config.json")
     if not os.path.exists(path):
         b.add("config.json", "(config.json нет — все настройки по умолчанию)")
     else:
@@ -384,7 +412,7 @@ def sec_config(b):
             b.add("config.json", f"(config.json не разбирается как JSON: {e})\n" + raw)
     if config:
         eff = {k: (mask(v) if SECRET_FIELD.search(k) and v else v) for k, v in config.load().items()}
-        eff["_openai_key_file"] = os.path.exists(os.path.join(ROOT, ".openai_key"))  # только факт, не содержимое
+        eff["_openai_key_file"] = os.path.exists(os.path.join(DATA, ".openai_key"))  # только факт, не содержимое
         b.add("config_effective.json", eff)
 
 
@@ -416,6 +444,9 @@ def sec_server_log(b):
     else:
         b.add("server.log", "(work/server.log пуст или его нет: сервер пишет в него только после перезапуска из интерфейса;"
                             " при запуске через start.cmd вывод — в его окне)")
+    p = os.path.join(WORK, "update-install.log")  # журнал установщика обновления (/LOG из server._update_release)
+    if os.path.exists(p) and os.path.getsize(p):
+        b.add("update-install.log", tail(p, 600))
 
 
 def sec_props(b):

@@ -13,11 +13,24 @@
 
 ## Быстрый старт
 
+Нужен запущенный [ComfyUI](https://www.comfy.org/) (Desktop, portable или git-установка) и Blender 4.2+.
+
+**Установщик (Windows).** Скачайте `propgen-setup-<версия>.exe` со страницы
+[Releases](https://github.com/creatoff/propgen/releases/latest) и запустите: права администратора не нужны, Python
+внутри. Программа ставится в `%LOCALAPPDATA%\Programs\propgen` и открывается в браузере (http://127.0.0.1:8795);
+дальше — ярлык propgen. Настройки, ключ и пропы лежат отдельно, в `%LOCALAPPDATA%\propgen`, — их не трогают ни
+обновление, ни удаление. Когда выходит новая версия, в заголовке появляется плашка «Обновление · 1.3.0»: кнопка
+«Обновить и перезапустить» скачивает установщик, ставит его поверх и запускает propgen снова.
+
+**Из репозитория (для разработки):**
+
 ```bat
-:: 1. Запустите ComfyUI (Desktop, portable или git-установку).
-setup.cmd     :: виртуальное окружение, зависимости, проверка системы
+git clone https://github.com/creatoff/propgen && cd propgen
+setup.cmd     :: виртуальное окружение (Python 3.10–3.12), зависимости, проверка системы
 start.cmd     :: сервер и браузер: http://127.0.0.1:8795
 ```
+
+Здесь всё лежит в папке клона (`config.json`, `work/`), а обновление из интерфейса — `git pull`.
 
 Если системе чего-то не хватает, при запуске откроется окно **Настройки** с результатами проверки и кнопками
 загрузки моделей. Сквозная проверка установки: `.venv\Scripts\python tools\smoke.py` — пример из `examples/`
@@ -116,7 +129,38 @@ Krea-2 Turbo для режима «по тексту» — необязател�
 | Ошибки в проверке системы | Окно «Настройки» указывает, что именно исправить |
 | Шаг завершился ошибкой | Лог шага (кнопка ≡) или `work/props/<id>/logs/<шаг>.log` |
 | ComfyUI не отвечает | ComfyUI Desktop по умолчанию слушает порт 8000, portable и git — 8188; проверка подскажет рабочий адрес |
-| Не запускается или непонятно, что сломалось | `debug.cmd` (или «Настройки → Система → Отчёт для отладки») собирает `work/debug-<дата>.zip`: сводку, проверку системы, логи сервера, ComfyUI и последних пропов. Работает без сервера и без `.venv`; ключей в архиве нет. Пришлите этот файл |
+| Не запускается или непонятно, что сломалось | `debug.cmd` (или «Настройки → Система → Отчёт для отладки») собирает `work/debug-<дата>.zip` в папке данных (у установленной версии — `%LOCALAPPDATA%\propgen\work`): сводку, проверку системы, логи сервера, ComfyUI и последних пропов. Работает без сервера и без `.venv`; ключей в архиве нет. Пришлите этот файл |
+
+## Сборка инсталлятора
+
+Инсталлятор для Windows собирает GitHub Actions (`.github/workflows/release.yml`, `windows-latest`). Внутри — код
+программы, собственный Python 3.12 ([python-build-standalone](https://github.com/astral-sh/python-build-standalone),
+версия закреплена в `tools/build/build.py`) со всеми зависимостями и Microsoft Visual C++ Redistributable.
+Устанавливается без прав администратора в `%LOCALAPPDATA%\Programs\propgen`; данные — отдельно, в `%LOCALAPPDATA%\propgen`.
+
+**Выпустить релиз** — поставить тег с версией:
+
+```
+git tag v1.2.0
+git push --tags
+```
+
+Workflow соберёт `propgen-setup-1.2.0.exe`, проверит его (тихая установка в чистую папку, запуск сервера,
+обновление поверх запущенного, удаление) и создаст GitHub Release с этим файлом и списком изменений. Установленные
+копии propgen находят новый релиз сами. Тег с дефисом (`v1.3.0-rc1`) публикуется как pre-release.
+Пробная сборка без релиза: Actions → release → Run workflow (или `gh workflow run release.yml -f version=1.2.0-test`),
+инсталлятор — в артефактах запуска.
+
+**Собрать вручную** (Windows, любой Python 3.10+ для запуска сборщика; нужен [Inno Setup 6](https://jrsoftware.org/isdl.php)):
+
+```
+python tools\build\build.py --version 1.2.0          # → dist\propgen-setup-1.2.0.exe
+python tools\build\build.py --skip-installer         # только папка программы build\app и её проверка
+python tools\build\build.py --install-test dist\propgen-setup-1.2.0.exe
+```
+
+Ключи тихой установки — как у обновления из программы: `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS`
+(после неё propgen запускается сам; `/NOSTART` — не запускать).
 
 ## Структура проекта
 
@@ -132,6 +176,7 @@ Krea-2 Turbo для режима «по тексту» — необязател�
 | `tools/config.py`, `tools/doctor.py` | Настройки (`config.json`), проверка системы и загрузка моделей |
 | `tools/comfywatch.py`, `tools/smoke.py` | Прогресс ComfyUI, сквозная проверка |
 | `tools/debug.py`, `debug.cmd` | Отладочный архив для присылки (только stdlib; также `GET /api/debug`) |
+| `tools/build/`, `installer/`, `.github/workflows/release.yml` | Сборка инсталлятора: сборщик, сценарий Inno Setup и иконка, GitHub Actions |
 | `.claude/skills/propgen-setup/` | Инструкция по установке для агента; `CLAUDE.md` — памятка для работы с кодом |
 
 <details>

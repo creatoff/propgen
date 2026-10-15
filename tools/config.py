@@ -1,16 +1,45 @@
-"""Настройки propgen: config.json в корне проекта (в .gitignore) поверх значений по умолчанию.
+"""Настройки propgen: config.json в папке данных (в git-режиме — корень проекта, в .gitignore) поверх умолчаний.
 Пустая строка = «найти автоматически». Читают сервер и все скрипты; правятся на экране настроек или руками.
+
+Два режима:
+- git (клон репозитория, setup.cmd): данные там же, где код — DATA = ROOT, как было всегда;
+- установленный (инсталлятор кладёт ROOT/installed.json): код в %LOCALAPPDATA%\\Programs\\propgen, его целиком
+  заменяет следующее обновление, поэтому данные отдельно — %LOCALAPPDATA%\\propgen (config.json, .openai_key, work\\).
+PROPGEN_DATA переопределяет папку данных в любом режиме (проверки, вторая копия рядом с первой).
 """
 import glob
 import json
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PATH = os.path.join(ROOT, "config.json")
 WIN = sys.platform == "win32"
+INSTALLED_FILE = os.path.join(ROOT, "installed.json")
+INSTALLED = os.path.exists(INSTALLED_FILE)
+
+
+def _data_dir():
+    env = os.environ.get("PROPGEN_DATA", "").strip().strip('"')
+    if env:
+        return os.path.abspath(os.path.expanduser(env))
+    if not INSTALLED:
+        return ROOT
+    base = os.environ.get("LOCALAPPDATA") if WIN else os.environ.get("XDG_DATA_HOME")
+    return os.path.join(base or os.path.expanduser(os.path.join("~", ".local", "share")), "propgen")
+
+
+DATA = _data_dir()                        # config.json, .openai_key, work\
+WORK = os.path.join(DATA, "work")         # пропы, логи, кэш и расход LLM, debug-*.zip, server.log
+PATH = os.path.join(DATA, "config.json")
+KEY_FILE = os.path.join(DATA, ".openai_key")
+if DATA != ROOT:
+    try:  # отдельная папка данных создаётся при первом запуске; ошибку покажет первая же запись в неё
+        os.makedirs(WORK, exist_ok=True)
+    except OSError:
+        pass
 
 DEFAULTS = {
     "port": 8795,
@@ -19,7 +48,7 @@ DEFAULTS = {
     "models_dir": "",            # куда докачивать модели; пусто — первая папка нужного типа из настроек самого ComfyUI
     "blender": "",               # путь к blender(.exe); пусто — поиск в PATH и стандартных местах
     "llm_mode": "auto",          # auto: OpenAI, если есть ключ, иначе локально · openai · local · off
-    "openai_key": "",            # ключ OpenAI (или файл .openai_key в корне)
+    "openai_key": "",            # ключ OpenAI (или файл .openai_key в папке данных)
     "openai_model": "gpt-4.1-mini",
     "openai_daily_usd": 0.20,
     "lmstudio_url": "http://127.0.0.1:1234",
@@ -43,6 +72,7 @@ def save(changes):
     cfg = load()
     cfg.update({k: v for k, v in changes.items() if k in DEFAULTS})
     stored = {k: v for k, v in cfg.items() if v != DEFAULTS[k]}  # в файле только отличия от умолчаний
+    os.makedirs(DATA, exist_ok=True)
     with open(PATH + ".tmp", "w", encoding="utf-8") as f:
         json.dump(stored, f, ensure_ascii=False, indent=1)
     os.replace(PATH + ".tmp", PATH)
@@ -55,10 +85,36 @@ def get(key):
 
 def openai_key():
     k = get("openai_key").strip()
-    if not k and os.path.exists(os.path.join(ROOT, ".openai_key")):
-        with open(os.path.join(ROOT, ".openai_key"), encoding="utf-8") as f:
+    if not k and os.path.exists(KEY_FILE):
+        with open(KEY_FILE, encoding="utf-8") as f:
             k = f.read().strip()
     return k
+
+
+def app_python():
+    """Python приложения: у установленного — встроенный python\\python.exe, в git-режиме — .venv (после setup.cmd)."""
+    for p in (os.path.join(ROOT, "python", "python.exe" if WIN else os.path.join("bin", "python3")),
+              os.path.join(ROOT, ".venv", "Scripts", "python.exe") if WIN else os.path.join(ROOT, ".venv", "bin", "python")):
+        if os.path.exists(p):
+            return p
+    return ""
+
+
+def version_info():
+    """Какая версия запущена: у установленной — из installed.json (его пишет сборка), в git-режиме — короткий sha."""
+    if INSTALLED:
+        d = _read_json(INSTALLED_FILE) or {}
+        return {"installed": True, "version": str(d.get("version") or ""), "tag": str(d.get("tag") or ""),
+                "commit": str(d.get("commit") or ""), "built": str(d.get("built") or "")}
+    head = ""
+    if os.path.isdir(os.path.join(ROOT, ".git")) and shutil.which("git"):
+        try:
+            r = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True,
+                               timeout=10, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            head = r.stdout.strip() if r.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return {"installed": False, "version": head, "tag": "", "commit": head, "built": ""}
 
 
 def find_blender():

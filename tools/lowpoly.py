@@ -53,8 +53,10 @@ import subprocess
 import tempfile
 tmp = tempfile.mkdtemp()
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# python проекта (pymeshlab, scipy…): сервер передаёт его в PROPGEN_PY; при ручном запуске — .venv рядом
-PY = os.environ.get("PROPGEN_PY") or next((p for p in (os.path.join(root, ".venv", "Scripts", "python.exe"),
+# python проекта (pymeshlab, scipy…): сервер передаёт его в PROPGEN_PY; при ручном запуске — встроенный python\
+# установленной версии или .venv git-клона рядом
+PY = os.environ.get("PROPGEN_PY") or next((p for p in (os.path.join(root, "python", "python.exe"),
+                                                       os.path.join(root, ".venv", "Scripts", "python.exe"),
                                                        os.path.join(root, ".venv", "bin", "python")) if os.path.exists(p)), "python")
 subprocess.run([PY, os.path.join(root, "tools", "solidify.py"),
                 src, os.path.join(tmp, "lo.ply"), "--tris", str(TRIS), "--res", str(opt("--res", 256, int)),

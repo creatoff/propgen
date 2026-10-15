@@ -567,6 +567,7 @@ input[type=checkbox]:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--
 .commits li + li { box-shadow: 0 -1px 0 var(--line); }
 .commits .s { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .commits .d { color: var(--dim); font-size: 11.5px; white-space: nowrap; }
+.commits.notes li { grid-template-columns: minmax(0, 1fr); line-height: 1.45; }  /* пункты выпуска — без хеша, с переносом */
 .upd-warn, .upd-err, .upd-msg { border-radius: var(--r2); padding: 8px 12px; font-size: 12px; line-height: 1.45; }
 .upd-warn { color: var(--acc2); background: var(--acc-soft); }
 .upd-err { color: var(--err); background: var(--err-soft); }

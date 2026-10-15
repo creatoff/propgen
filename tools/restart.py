@@ -1,5 +1,5 @@
 """Перезапуск сервера после обновления, когда его запустили не через start.cmd: дождаться, пока старый процесс
-освободит порт, и запустить server.py заново отдельным процессом (вывод — в work/server.log).
+освободит порт, и запустить server.py заново отдельным процессом (вывод — в work/server.log папки данных).
 
 python tools/restart.py <port> <python> <server.py>
 """
@@ -18,8 +18,10 @@ for _ in range(120):  # до 30 с
             break
         except OSError:
             time.sleep(0.25)
-os.makedirs(os.path.join(root, "work"), exist_ok=True)
-log = open(os.path.join(root, "work", "server.log"), "a", encoding="utf-8")
+sys.path.insert(0, os.path.join(root, "tools"))
+import config  # noqa: E402 — папка данных: у установленной версии work не рядом с кодом (см. config.DATA)
+os.makedirs(config.WORK, exist_ok=True)
+log = open(os.path.join(config.WORK, "server.log"), "a", encoding="utf-8")
 flags = (getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
          | getattr(subprocess, "CREATE_NO_WINDOW", 0))
 subprocess.Popen([py, server], cwd=root, stdout=log, stderr=subprocess.STDOUT, creationflags=flags, close_fds=True,
