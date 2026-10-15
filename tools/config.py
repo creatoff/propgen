@@ -4,6 +4,7 @@
 import glob
 import json
 import os
+import shlex
 import shutil
 import sys
 
@@ -14,6 +15,7 @@ WIN = sys.platform == "win32"
 DEFAULTS = {
     "port": 8795,
     "comfy_url": "http://127.0.0.1:8188",
+    "comfy_launch": "",          # чем запускать ComfyUI: exe Desktop, run_nvidia_gpu.bat или main.py; пусто — автопоиск
     "models_dir": "",            # куда докачивать модели; пусто — первая папка нужного типа из настроек самого ComfyUI
     "blender": "",               # путь к blender(.exe); пусто — поиск в PATH и стандартных местах
     "llm_mode": "auto",          # auto: OpenAI, если есть ключ, иначе локально · openai · local · off
@@ -92,6 +94,113 @@ def find_lms():
         return p
     p = os.path.expanduser(os.path.join("~", ".lmstudio", "bin", "lms.exe" if WIN else "lms"))
     return p if os.path.exists(p) else (shutil.which("lms") or "")
+
+
+# ---------- запуск ComfyUI из интерфейса (POST /api/comfy/start)
+
+def _read_json(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def desktop2_installs():
+    """Локальные установки нового ComfyUI Desktop («Comfy Desktop», настройки в %APPDATA%\\Comfy Desktop), свежие первыми.
+
+    Его exe при старте открывает только панель выбора установки и сервер сам не поднимает (если в нём не включён
+    автозапуск), поэтому запускаем установку напрямую — её же python и с теми же папками моделей, входа и выхода,
+    что передаёт Desktop: без --extra-model-paths-config ComfyUI не увидит модели из общих папок."""
+    base = os.path.join(os.environ.get("APPDATA", ""), "Comfy Desktop")
+    insts = _read_json(os.path.join(base, "installations.json")) if WIN and os.environ.get("APPDATA") else None
+    if not isinstance(insts, list):
+        return []
+    sett = _read_json(os.path.join(base, "settings.json")) or {}
+    out = []
+    for i in insts:
+        root = i.get("installPath") or ""
+        main = os.path.join(root, "ComfyUI", "main.py")
+        if not root or i.get("status", "installed") != "installed" or not os.path.exists(main):
+            continue  # облачная «установка» (Comfy Cloud), недокачанная или удалённая папка
+        args = [a.strip('"') for a in shlex.split(i.get("launchArgs") or "", posix=False)]
+        paths = os.path.join(base, "instance-model-paths", f"{i.get('id')}.yaml")
+        if os.path.exists(paths):
+            args += ["--extra-model-paths-config", paths]
+        for key, flag in (("inputDir", "--input-directory"), ("outputDir", "--output-directory")):
+            if sett.get(key):
+                args += [flag, sett[key]]
+        out.append({"main": main, "args": args, "name": i.get("name") or "", "last": i.get("lastLaunchedAt") or 0})
+    return sorted(out, key=lambda x: -x["last"])
+
+
+def _comfy_candidates():
+    """Типичные места установки — по шаблонам и переменным окружения, без обхода дисков."""
+    if not WIN:
+        return [os.path.expanduser("~/ComfyUI/main.py")]
+    c = [d["main"] for d in desktop2_installs()]
+    local, home = os.environ.get("LOCALAPPDATA"), os.environ.get("USERPROFILE")
+    if local:  # Desktop 1.x: его exe сам поднимает сервер (по умолчанию на 8000)
+        c.append(os.path.join(local, "Programs", "ComfyUI", "ComfyUI.exe"))
+    roots = [f"{d}:\\" for d in "CDE"] + ([home] + [os.path.join(home, x) for x in ("Desktop", "Downloads", "Documents")] if home else [])
+    for r in roots:  # portable: архив распаковывают в ComfyUI_windows_portable (иногда с суффиксом версии)
+        for p in sorted(glob.glob(os.path.join(r, "ComfyUI_windows_portable*")), reverse=True):
+            c += [os.path.join(p, "run_nvidia_gpu.bat"), os.path.join(p, "run_cpu.bat")]
+    c += [os.path.join(r, "ComfyUI", "main.py") for r in roots]  # git-установка
+    return c
+
+
+def find_comfy_launch():
+    """Чем запускать ComfyUI: путь из настроек (comfy_launch), иначе автопоиск. Пусто — не нашли."""
+    p = (get("comfy_launch") or "").strip().strip('"')
+    if p and os.path.exists(p):
+        return p
+    return next((c for c in _comfy_candidates() if os.path.exists(c)), "")
+
+
+def _python_near(main):
+    """Python установки ComfyUI рядом с main.py: venv/.venv (git, Desktop 2) или python_embeded (portable)."""
+    d = os.path.dirname(main)
+    rel = ("Scripts", "python.exe") if WIN else ("bin", "python")
+    for v in ("venv", ".venv"):
+        if os.path.exists(os.path.join(d, v, *rel)):
+            return os.path.join(d, v, *rel)
+    emb = os.path.join(os.path.dirname(d), "python_embeded", "python.exe")
+    if os.path.exists(emb):
+        return emb
+    # системный python — последняя надежда (conda и т.п.); python проекта не годится: в нём нет torch
+    return shutil.which("python") or shutil.which("python3") or ""
+
+
+def comfy_launch_plan(path=None):
+    """Как запустить ComfyUI: {"path", "kind", "argv", "cwd"} (kind: exe · bat · main · desktop2) или {"error"};
+    None — запускать нечем. main.py получает --port из comfy_url: ComfyUI должен подняться там, где его ждёт propgen."""
+    import urllib.parse
+    path = (path or find_comfy_launch()).strip().strip('"')
+    if not path or not os.path.exists(path):
+        return None
+    path = os.path.abspath(path)
+    folder, low = os.path.dirname(path), path.lower()
+    if os.path.basename(low) == "comfy desktop.exe":
+        # лаунчер Desktop 2 сам сервер не поднимает (только панель установок) — указали его, значит хотят «запусти
+        # ComfyUI»: запускаем его последнюю установку напрямую, как это делает он сам
+        d2 = desktop2_installs()
+        if d2:
+            return comfy_launch_plan(d2[0]["main"])
+    if low.endswith((".bat", ".cmd")):
+        return {"path": path, "kind": "bat", "argv": ["cmd", "/c", path], "cwd": folder}
+    if low.endswith(".py"):
+        py = _python_near(path)
+        if not py:
+            return {"path": path, "error": "рядом с main.py нет venv/.venv/python_embeded, и python не найден в PATH"}
+        d2 = next((d for d in desktop2_installs() if os.path.normcase(d["main"]) == os.path.normcase(path)), None)
+        args = list(d2["args"]) if d2 else []
+        argv = [py, "-s", path] + (["--windows-standalone-build"] if "python_embeded" in py else []) + args
+        u = urllib.parse.urlparse(get("comfy_url"))
+        if u.port and u.hostname in ("127.0.0.1", "localhost") and "--port" not in args:
+            argv += ["--port", str(u.port)]
+        return {"path": path, "kind": "desktop2" if d2 else "main", "argv": argv, "cwd": folder}
+    return {"path": path, "kind": "exe", "argv": [path], "cwd": folder}
 
 
 def venv_python():

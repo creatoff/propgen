@@ -27,6 +27,10 @@
   **Не зашивай пути, адреса, порты и ключи в код.** Поля и умолчания — `config.DEFAULTS`.
 - Экран «⚙ Настройки» в интерфейсе = `GET/POST /api/settings`, `POST /api/settings/test_openai`, `GET /api/doctor`,
   `POST /api/doctor/download {groups}` (+ `GET` — прогресс), `POST /api/doctor/local_model` (LM Studio `lms get`).
+- Кнопка «Запустить ComfyUI» = `POST /api/comfy/start` (уже отвечает или нашёлся на 8188/8000/8189 → `already`, `found_at`;
+  нечем запускать → 409) и `GET` — опрос. Чем запускать — `comfy_launch` / `config.find_comfy_launch()` +
+  `config.comfy_launch_plan()`: exe Desktop 1.x, `.bat` portable, `main.py` (python рядом). У Desktop 2 («Comfy Desktop»)
+  exe сам сервер не поднимает — запускается его установка напрямую с аргументами из `%APPDATA%\Comfy Desktop`.
 - Текстовая модель: `llm_mode` = `auto` (OpenAI при наличии ключа, иначе LM Studio) · `openai` · `local` · `off`.
   OpenAI — `tools/llm_openai.py` (кэш `work/llm_cache.json`, расход `work/llm_usage.jsonl`, дневной лимит).
   Локально — `tools/llm.py`: Gemma-3-4B через LM Studio; перед ней ComfyUI выгружает модели (`/free`), поэтому

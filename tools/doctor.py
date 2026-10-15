@@ -418,7 +418,8 @@ def check_all():
 
 # ---------- докачка
 
-DL = {"active": False, "file": None, "done_bytes": 0, "total_bytes": 0, "files_done": 0, "files_total": 0, "error": None, "log": []}
+# groups — что качается: интерфейс по ним находит строку проверки, где показать прогресс (окно могли открыть заново)
+DL = {"active": False, "groups": [], "file": None, "done_bytes": 0, "total_bytes": 0, "files_done": 0, "files_total": 0, "error": None, "log": []}
 
 
 def target_dir(folder, folders):
@@ -480,7 +481,7 @@ def _fetch(url, dest, threads=6, chunk=32 << 20):
 
 def download(groups=("core",), log=print):
     """Докачать недостающее из групп. Модели — в папки ComfyUI, панорамы — в web/hdri."""
-    DL.update(active=True, error=None, done_bytes=0, total_bytes=0, files_done=0, log=[])
+    DL.update(active=True, groups=sorted(groups), error=None, done_bytes=0, total_bytes=0, files_done=0, files_total=0, log=[])
     try:
         jobs = []
         if any(g != "hdri" for g in groups):

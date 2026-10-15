@@ -360,10 +360,23 @@ dialog.settings[open] { display: flex; }
 .chk .d { color: var(--dim); font-size: 12px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chk.bad .d { white-space: pre-line; word-break: break-word; }  /* у ошибки нужен весь текст — там сказано, что поправить */
 .chk button { align-self: center; }
-.dl { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--dim); background: var(--island2); border-radius: var(--r); padding: 10px 14px; }
-.dl-row { display: flex; gap: 8px; }
-.dl .bar { display: block; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, .08); overflow: hidden; }
-.dl .bar i { display: block; height: 100%; width: 0; background: var(--acc); transition: width .4s; }
+/* несколько кнопок в строке проверки («Запустить ComfyUI» + «Адрес») — одной ячейкой сетки */
+.chk-btns { display: flex; gap: 6px; align-items: center; }
+.chk-btns [data-comfy-start]:disabled { opacity: 1; font-variant-numeric: tabular-nums; }  /* «запускаю… 12 с» — не бледным */
+#health .cs-link { color: var(--acc2); font-size: inherit; text-decoration: underline; }
+#health .cs-link:disabled { text-decoration: none; cursor: default; }
+/* прогресс докачки — внутри строки, чьей кнопкой запущен: подпись (файл слева, счётчики справа) и тонкая полоса */
+.dlp { display: flex; flex-direction: column; gap: 4px; margin-top: 5px; min-width: 0; font-size: 12px; color: var(--dim); }
+.dlp-t { display: flex; gap: 10px; min-width: 0; }
+.dlp-t .f { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.dlp-t .n { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dlp .bar { display: block; height: 3px; border-radius: 2px; background: rgba(255, 255, 255, .08); overflow: hidden; }
+.dlp .bar i { display: block; height: 100%; width: 0; background: var(--acc); transition: width .4s; }
+.dlp.err .f { color: var(--err); white-space: normal; word-break: break-word; }  /* ошибку — целиком, там причина */
+.dlp.err .bar { display: none; }
+.wf-m.dl-on { flex-wrap: wrap; row-gap: 2px; padding-bottom: 2px; }
+.wf-m > .dlp { flex-basis: 100%; margin-top: 0; }
+.dl-box { margin-top: 0; padding: 10px 14px; background: var(--island2); border-radius: var(--r); }  /* запасной: строки нет */
 
 /* проверка цепочкой: #checks — просто колонка, острова внутри (итог, основа, шаги, просмотрщик) */
 #checks.wf-mode { background: none; padding: 0; gap: 10px; }

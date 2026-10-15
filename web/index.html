@@ -283,10 +283,8 @@
             <button class="small" id="dbgGet" type="button" title="Архив с логами и состоянием системы, без ключей — пришлите его, если что-то не работает">Отчёт для отладки</button>
             <button class="small" id="docRun">Проверить снова</button></div></div>
         <div class="checks" id="checks"><div class="hint">проверяю…</div></div>
-        <div class="dl" id="dlBox" hidden>
-          <div class="dl-row"><span id="dlFile"></span><span class="spacer"></span><span id="dlNum"></span></div>
-          <i class="bar"><i id="dlBar"></i></i>
-        </div>
+        <!-- прогресс докачки рисуется в строке своей кнопки; сюда — только если такой строки нет (app.js → dlPaint) -->
+        <div class="dlp dl-box" id="dlBox" hidden></div>
       </section>
 
       <section class="set-sec" data-sec="llm" hidden>
@@ -328,6 +326,8 @@
         <div class="fgroup">
           <div class="fg-h">ComfyUI</div>
           <label class="frow"><span class="fl"><b>Адрес ComfyUI</b><small>Desktop — порт 8000, portable и git — 8188</small></span><input data-c="comfy_url"></label>
+          <label class="frow"><span class="fl"><b>Запуск ComfyUI</b><small>exe Desktop, run_nvidia_gpu.bat или main.py; пусто — найти самому</small></span>
+            <input data-c="comfy_launch" id="comfyLaunchIn" placeholder="авто"></label>
           <label class="frow"><span class="fl"><b>Папка моделей</b><small>куда докачивать недостающие модели</small></span>
             <input data-c="models_dir" placeholder="авто: папки самого ComfyUI"></label>
         </div>

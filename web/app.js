@@ -116,7 +116,11 @@ $("#describeBtn").onclick = async () => {
     const kind = vmodeOf(cur.params) === "text" ? "t2i" : "edit";
     cur = await api(`/api/props/${cur.id}/describe`, json("POST", { notes: $("[data-f=notes]").value, kind }));
     render(cur); poll(); healthAt = 0;
-  } catch (e) { alert(e.message); render(cur); }
+  } catch (e) {
+    render(cur);
+    // нечем переводить — сразу туда, где это чинится
+    if (e.message.startsWith("Текстовой модели нет")) openSettings(e.message, "llm"); else alert(e.message);
+  }
 };
 function renderDescribe(m) {
   const b = $("#describeBtn"), st = m.steps.describe, on = busy(m, "describe");
@@ -778,7 +782,8 @@ async function poll() {
       const h = await api("/api/health");
       $("#health").innerHTML = h.comfy
         ? `<span class="dot ok"></span>Comfy · VRAM ${((h.vram_total - h.vram_free) / 2 ** 30).toFixed(1)} / ${(h.vram_total / 2 ** 30).toFixed(1)} ГБ`
-        : `<span class="dot bad"></span>Comfy не запущен`;
+        : `<span class="dot bad"></span>Comfy не запущен · <button class="link cs-link" data-comfy-start>запустить</button>`;
+      csPaint();  // во время запуска строка перерисовалась — вернуть в ней «запускаю… N с»
       if (h.openai?.key)  // расход на тексты за сегодня — следить за экономией
         $("#health").innerHTML += ` · <span title="модель ${h.openai.model}, дневной лимит $${h.openai.limit}">OpenAI $${h.openai.today.toFixed(4)} сегодня</span>`;
     }
@@ -1005,6 +1010,8 @@ async function loadSettings() {
   settings = await api("/api/settings");
   for (const inp of $$("#setDlg [data-c]")) inp.value = settings.config[inp.dataset.c] ?? "";
   $("#blenderIn").placeholder = settings.detected.blender ? "авто: " + settings.detected.blender : "не найден — укажи путь к blender.exe";
+  $("#comfyLaunchIn").placeholder = settings.detected.comfy_launch ? "авто: " + settings.detected.comfy_launch
+    : settings.detected.comfy_launch === "" ? "не найден — укажи exe, .bat или main.py" : "авто";
   $("[data-c=lms]").placeholder = settings.detected.lms ? "авто: " + settings.detected.lms : "не найден";
   for (const r of $$("input[name=llm_mode]")) r.checked = r.value === settings.config.llm_mode;
   $("#keyState").textContent = settings.has_key ? "ключ сохранён" : "ключа нет — без него тексты делает локальная модель (режим «авто»)";
@@ -1041,15 +1048,22 @@ const chkRow = (state, title, detail = "", btn = "") =>
 const goBtn = (sec, text) => `<button class="small" data-go="${sec}">${text}</button>`;
 const esc = t => String(t ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 let lastDoctor = null;
+// докачка: groups/id — что и чьей кнопкой запущено, plan — ожидаемый объём (сервер узнаёт размер файла, только
+// начав его), d — последний ответ GET /api/doctor/download; dlReady — строки проверки уже нарисованы
+const dl = { groups: null, id: "", plan: 0, d: null, polling: false };
+let dlReady = false;
 async function runDoctor() {
   $("#checks").innerHTML = '<div class="hint">проверяю…</div>';
+  dlReady = false; dlPaint();  // строк пока нет — прогресс вернётся в свою строку после отрисовки
   let r;
   try { r = lastDoctor = await api("/api/doctor"); } catch (e) {
-    $("#checks").innerHTML = chkRow("bad", "Сервер propgen не ответил", esc(e.message)); setDot("system", "bad"); return;
+    $("#checks").innerHTML = chkRow("bad", "Сервер propgen не ответил", esc(e.message)); setDot("system", "bad");
+    dlReady = true; dlPaint(); return;
   }
   // r.steps появились вместе с цепочкой; сервер со старым doctor (ещё не перезапущен) — прежний плоский список
   const states = r.steps ? workflow(r) : flatChecks(r);
-  $$("#checks [data-dl]").forEach(btn => btn.onclick = () => startDownload(btn.dataset.dl.split(",")));
+  $$("#checks [data-dl]").forEach(btn => btn.onclick = () => startDownload(btn.dataset.dl.split(","), btn.dataset.dlid, +btn.dataset.gb || 0));
+  dlReady = true; dlPaint(); dlResume();
   $$("#checks [data-go]").forEach(btn => btn.onclick = () => showSec(btn.dataset.go));
   $("#settingsBtn").classList.toggle("alert", !setupReady(r));
   // точки в навигации: «Система» — худшее из проверок, остальные — по своим программам
@@ -1062,6 +1076,9 @@ async function runDoctor() {
 // ---- проверка системы цепочкой: итог «минимальный набор», основа (ComfyUI, Python), шаги конвейера с вариантами
 // (что на шаге используется и чего не хватает), просмотрщик. Данные готовит tools/doctor.py → steps, minimum.
 const gbTxt = gb => gb.toFixed(1).replace(".", ",");
+// панорама 4k — около 21 МБ; объём по недостающим, чтобы полоса прогресса не прыгала от файла к файлу
+const hdriBtn = h => { const gb = (h.total - h.have) * 0.021;
+  return `<button class="small" data-dl="hdri" data-dlid="hdri" data-gb="${gb}">Скачать ~${Math.round(gb * 1024)} МБ</button>`; };
 function workflow(r) {
   const c = r.comfy, py = r.python, h = r.hdri, min = r.minimum, states = [];
   const coreGb = c.ok ? c.models.filter(m => m.group === "core" && !m.ok).reduce((a, m) => a + m.gb, 0) : 0;
@@ -1070,13 +1087,13 @@ function workflow(r) {
       "<small>ComfyUI с нодами · модели основного пути · Blender · Python — конвейер поедет</small></div></div>"
     : `<div class="wf-sum bad"><span class="ic">✕</span><div><b>Не хватает минимального набора</b>` +
       `<small title="${esc(min.missing.join(" · "))}">${esc(min.missing.join(" · "))}</small></div>` +
-      (min.download.length ? `<button class="small primary" data-dl="${min.download.join(",")}">Скачать ${gbTxt(coreGb)} ГБ</button>` : "") + "</div>";
+      (min.download.length ? `<button class="small primary" data-dl="${min.download.join(",")}" data-dlid="sum" data-gb="${coreGb}">Скачать ${gbTxt(coreGb)} ГБ</button>` : "") + "</div>";
   states.push(min.ok ? "ok" : "bad");
 
   // основа: ComfyUI (через него идут фронт и 3D) и Python-зависимости сервера
   const base = [];
   if (!c.ok) base.push(chkRow("bad", "ComfyUI не отвечает",
-    esc(c.error) + "\nЗапусти ComfyUI (Desktop или portable) и проверь адрес в разделе «ComfyUI и Blender».", goBtn("apps", "Адрес")));
+    esc(c.error) + "\nЗапусти ComfyUI (Desktop или portable) и проверь адрес в разделе «ComfyUI и Blender».", comfyBtns(c)));
   else {
     const noNode = c.nodes.filter(n => !n.ok), gguf = c.nodes.find(n => n.name === "UnetLoaderGGUF");
     base.push(chkRow(noNode.length ? "bad" : "ok", `ComfyUI ${esc(c.version)}`,
@@ -1099,7 +1116,8 @@ function workflow(r) {
       return `<span class="wf-o ${cls}${o.current ? " cur" : ""}" title="${esc(tip)}"><i>${o.ok ? "✓" : cls === "bad" ? "✕" : "○"}</i>` +
         `${esc(o.title)}${o.current ? "<em>сейчас</em>" : ""}</span>`;
     }).join("");
-    const act = o => o.gb > 0 ? `<button class="small${s.state === "bad" ? " primary" : ""}" data-dl="${o.download.join(",")}">Скачать ${gbTxt(o.gb)} ГБ</button>`
+    // data-dlid — какая именно строка: одна группа (core) бывает и в итоге, и под шагом, прогресс — там, где нажали
+    const act = o => o.gb > 0 ? `<button class="small${s.state === "bad" ? " primary" : ""}" data-dl="${o.download.join(",")}" data-dlid="${esc(s.id)}:${o.download.join(",")}" data-gb="${o.gb}">Скачать ${gbTxt(o.gb)} ГБ</button>`
       : o.manual.length ? '<span class="wf-manual">положи файлы в папку моделей ComfyUI</span>'
       : s.id === "prompt" ? goBtn("llm", "Настроить")
       : o.missing.some(m => m.startsWith("Blender")) ? goBtn("apps", "Указать путь") : "";
@@ -1117,7 +1135,7 @@ function workflow(r) {
   }).join("") + "</div>";
 
   html += '<div class="fg-h">Просмотрщик</div><div class="checks">' +
-    chkRow(h.ok ? "ok" : "opt", "Панорамы 4k для фона — по желанию", `${h.have} из ${h.total}`, h.ok ? "" : '<button class="small" data-dl="hdri">Скачать ~80 МБ</button>') + "</div>";
+    chkRow(h.ok ? "ok" : "opt", "Панорамы 4k для фона — по желанию", `${h.have} из ${h.total}`, h.ok ? "" : hdriBtn(h)) + "</div>";
   states.push(h.ok ? "ok" : "opt");
   $("#checks").innerHTML = html;
   $("#checks").classList.add("wf-mode");
@@ -1130,7 +1148,7 @@ function flatChecks(r) {
   const add = (state, ...a) => { states.push(state); rows.push(chkRow(state, ...a)); };
   if (c.ok) add("ok", `ComfyUI ${esc(c.version)}`, `${esc(c.gpu)} · ${c.vram_gb} ГБ видеопамяти · ${c.ram_gb} ГБ RAM`);
   else add("bad", "ComfyUI не отвечает", esc(c.error) + "\nЗапусти ComfyUI (Desktop или portable) и проверь адрес в разделе «ComfyUI и Blender».",
-    goBtn("apps", "Адрес"));
+    comfyBtns(c));
   if (c.ok) {
     for (const n of c.nodes.filter(n => !n.ok)) add("bad", `Нет ноды ${esc(n.name)}`, esc(n.fix));
     for (const [g, label] of Object.entries(r.groups)) {
@@ -1140,7 +1158,7 @@ function flatChecks(r) {
       const must = g === "core";
       add(miss.length ? (must ? "bad" : "opt") : "ok", `Модели: ${esc(label)}${must ? "" : " — по желанию"}`,
         miss.length ? `нет ${miss.length} из ${ms.length}: ${miss.map(m => esc(m.file)).join(", ")}` : "все на месте",
-        miss.length ? `<button class="small${must ? " primary" : ""}" data-dl="${g}">Скачать ${gb.toFixed(1).replace(".", ",")} ГБ</button>` : "");
+        miss.length ? `<button class="small${must ? " primary" : ""}" data-dl="${g}" data-gb="${gb}">Скачать ${gb.toFixed(1).replace(".", ",")} ГБ</button>` : "");
     }
   }
   const b = r.blender;
@@ -1156,7 +1174,7 @@ function flatChecks(r) {
   if (py.ok) add("ok", "Python-зависимости", esc(py.python));
   else add("bad", "Python-зависимости", esc(py.fix || `нет: ${py.missing.join(", ")} — запусти setup.cmd`));
   const h = r.hdri;
-  add(h.ok ? "ok" : "opt", "Панорамы 4k для фона — по желанию", `${h.have} из ${h.total}`, h.ok ? "" : '<button class="small" data-dl="hdri">Скачать ~80 МБ</button>');
+  add(h.ok ? "ok" : "opt", "Панорамы 4k для фона — по желанию", `${h.have} из ${h.total}`, h.ok ? "" : hdriBtn(h));
   $("#checks").innerHTML = rows.join("");
   $("#checks").classList.remove("wf-mode");
   return states;
@@ -1164,6 +1182,69 @@ function flatChecks(r) {
 const setupReady = r => r.minimum ? r.minimum.ok :
   r.comfy.ok && r.comfy.nodes.every(n => n.ok) && r.comfy.models.filter(m => m.group === "core").every(m => m.ok) && r.blender.ok && r.python.ok;
 $("#docRun").onclick = runDoctor;
+
+// ---- запуск ComfyUI из интерфейса (POST /api/comfy/start). Desktop поднимается 30–90 с, portable — 10–30 с:
+// после нажатия опрашиваем GET раз в 2 с до ответа (не дольше 3 мин), затем заново проверяем систему
+const CS_WAIT = 180000;
+const cs = { at: 0, timer: null };  // at — когда нажали (мс); 0 — не запускаем
+// кнопки строки «ComfyUI не отвечает»: запуск, адрес; если ComfyUI нашёлся на соседнем порту — взять его адрес
+const comfyBtns = c => '<span class="chk-btns">' +
+  (c.found_at ? `<button class="small primary" data-comfy-url="${esc(c.found_at)}">Взять ${esc(c.found_at.replace(/^https?:\/\//, ""))}</button>`
+    : '<button class="small primary" data-comfy-start>Запустить ComfyUI</button>') + goBtn("apps", "Адрес") + "</span>";
+function csPaint() {
+  const busy = cs.at > 0, sec = Math.round((Date.now() - cs.at) / 1000);
+  for (const b of $$("[data-comfy-start]")) {
+    b.disabled = busy;
+    b.textContent = busy ? `запускаю… ${sec} с` : b.classList.contains("cs-link") ? "запустить" : "Запустить ComfyUI";
+  }
+}
+setInterval(() => cs.at && csPaint(), 1000);
+function csNote(msg, sec = "") {  // сообщение — в шапку настроек (открыть их, если закрыты: иначе его не увидят)
+  if (setDlg.open) { $("#setNote").textContent = msg; if (sec) showSec(sec); } else openSettings(msg, sec);
+}
+async function startComfy() {
+  if (cs.at) return;
+  let r;
+  try { r = await api("/api/comfy/start", json("POST", {})); } catch (e) {
+    // 409 — не нашли, чем запускать: сразу к полю «Запуск ComfyUI»
+    const none = /не нашёл/i.test(e.message);
+    csNote("✕ " + e.message, none ? "apps" : "");
+    if (none) $("#comfyLaunchIn").focus();
+    return;
+  }
+  if (r.already) return csDone(r);
+  cs.at = Date.now() - (r.starting ? (r.elapsed || 0) * 1000 : 0);  // уже запускали — продолжаем отсчёт с того раза
+  if (r.note && setDlg.open) $("#setNote").textContent = r.note;
+  csPaint(); csPoll();
+}
+async function csPoll() {
+  clearTimeout(cs.timer);
+  let r = null;
+  try { r = await api("/api/comfy/start"); } catch { /* сервер на миг не ответил — спросим снова */ }
+  if (r && (r.ok || r.found_at)) return csDone(r);
+  if (r && r.exited != null) return csFail(`✕ ComfyUI завершился (код ${r.exited}), так и не ответив — посмотрите его окно`);
+  if (Date.now() - cs.at > CS_WAIT) return csFail("✕ ComfyUI не ответил за 3 минуты — посмотрите его окно или запустите вручную");
+  csPaint();
+  cs.timer = setTimeout(csPoll, 2000);
+}
+function csDone(r) {
+  const took = cs.at ? Math.round((Date.now() - cs.at) / 1000) : 0;
+  cs.at = 0; csPaint(); healthAt = 0;
+  if (r.ok) { if (setDlg.open) $("#setNote").textContent = took ? `✓ ComfyUI запущен за ${took} с` : "✓ ComfyUI уже работает"; }
+  else csNote(`ComfyUI отвечает на ${r.found_at}, а в настройках ${r.url} — возьмите этот адрес`, "system");
+  runDoctor();
+}
+function csFail(msg) { cs.at = 0; csPaint(); csNote(msg, "system"); }
+document.addEventListener("click", async e => {
+  if (e.target.closest("[data-comfy-start]")) return startComfy();
+  const u = e.target.closest("[data-comfy-url]");
+  if (!u) return;
+  try {
+    await api("/api/settings", json("POST", { comfy_url: u.dataset.comfyUrl }));
+    $("#setNote").textContent = "адрес ComfyUI: " + u.dataset.comfyUrl;
+    await loadSettings(); runDoctor(); healthAt = 0;
+  } catch (err) { alert(err.message); }
+});
 // отладочный архив (tools/debug.py): сборка — секунды, а с проверкой ComfyUI и Blender бывает и минута, поэтому
 // через fetch, а не простой ссылкой — так видно «собираю…» и ошибку сервера, а не пустое ожидание
 $("#dbgGet").onclick = async () => {
@@ -1180,18 +1261,81 @@ $("#dbgGet").onclick = async () => {
   btn.disabled = false;
 };
 
-async function startDownload(groups) {
-  try { await api("/api/doctor/download", json("POST", { groups })); } catch (e) { return alert(e.message); }
-  $("#dlBox").hidden = false;
-  const tick = async () => {
-    const d = await api("/api/doctor/download");
-    const pct = d.total_bytes ? 100 * d.done_bytes / d.total_bytes : 0;
-    $("#dlBar").style.width = pct.toFixed(1) + "%";
-    $("#dlFile").textContent = d.error ? "✗ " + d.error : d.file ? "качаю " + d.file : d.active ? "готовлюсь…" : "готово";
-    $("#dlNum").textContent = `${d.files_done}/${d.files_total} · ${(d.done_bytes / 2 ** 30).toFixed(2)} из ${(d.total_bytes / 2 ** 30).toFixed(2)} ГБ`;
-    if (d.active) setTimeout(tick, 1000); else runDoctor();
-  };
-  tick();
+// ---- докачка моделей и панорам: прогресс — в той строке проверки, чьей кнопкой запущена загрузка.
+// #checks перерисовывается целиком при каждой проверке, поэтому состояние живёт в dl, а dlPaint() после каждой
+// отрисовки заново находит строку: по data-dlid нажатой кнопки, иначе по набору групп (окно открыли посреди загрузки —
+// сервер помнит только группы). Строки нет (старый сервер без groups) — запасной #dlBox под списком, не вдобавок к ней.
+const dlKey = g => [...g].sort().join(",");
+const sizeTxt = (done, total) => total < 2 ** 30
+  ? `${Math.round(done / 2 ** 20)} из ${Math.round(total / 2 ** 20)} МБ` : `${gbTxt(done / 2 ** 30)} из ${gbTxt(total / 2 ** 30)} ГБ`;
+function dlRow() {
+  if (!dl.groups) return null;
+  const key = dlKey(dl.groups);
+  const btn = (dl.id && $(`#checks [data-dlid="${CSS.escape(dl.id)}"]`)) ||
+    $$("#checks [data-dl]").find(b => dlKey(b.dataset.dl.split(",")) === key);
+  return btn?.closest(".chk, .wf-sum, .wf-m") || null;
+}
+function dlFill(p, d) {
+  if (!p.querySelector(".bar")) p.innerHTML = '<div class="dlp-t"><span class="f"></span><span class="n"></span></div><i class="bar"><i></i></i>';
+  const total = Math.max(d.total_bytes, dl.plan);  // сервер прибавляет размер файла, только начав его качать
+  p.classList.toggle("err", !!d.error);
+  p.querySelector(".f").textContent = d.error ? "✗ " + d.error : d.file ? "качаю " + d.file : "готовлюсь…";
+  p.querySelector(".f").title = d.error || "";
+  p.querySelector(".n").textContent = d.error || !d.files_total ? ""
+    : `${Math.min(d.files_done + (d.file ? 1 : 0), d.files_total)}/${d.files_total} · ${sizeTxt(d.done_bytes, total)}`;
+  p.querySelector(".bar > i").style.width = (total ? Math.min(100, 100 * d.done_bytes / total) : 0).toFixed(1) + "%";
+}
+function dlPaint() {
+  const d = dl.d, busy = !!d?.active, show = dlReady && !!(d && (d.active || d.error));
+  const row = show ? dlRow() : null;
+  // прогресс живёт в одной строке: из прочих (перерисовка, сменилась строка) — убрать
+  for (const p of $$("#checks .dlp")) if (p.parentElement.closest(".chk, .wf-sum, .wf-m") !== row) p.remove();
+  for (const r of $$("#checks .dl-on")) if (r !== row) r.classList.remove("dl-on");
+  // вторую загрузку сервер не примет (409) — все «Скачать» гасим, у своей строки кнопка говорит «Качаю…»
+  for (const b of $$("#checks [data-dl]")) {
+    b.dataset.txt ??= b.textContent;
+    b.disabled = busy;
+    b.textContent = busy && b.closest(".chk, .wf-sum, .wf-m") === row ? "Качаю…" : b.dataset.txt;
+    b.title = busy ? "дождись текущей загрузки" : "";
+  }
+  $("#dlBox").hidden = !(show && !row);
+  if (!show) return;
+  if (!row) return dlFill($("#dlBox"), d);
+  row.classList.add("dl-on");
+  // текстовая колонка строки: у .chk — .tx, у итога — блок с заголовком; .wf-m — сама строка (полоса — под ней)
+  const host = row.matches(".wf-m") ? row : row.querySelector(".tx") || row.querySelector(":scope > div");
+  let p = host.querySelector(":scope > .dlp");
+  if (!p) { p = document.createElement("div"); p.className = "dlp"; host.append(p); }
+  dlFill(p, d);
+}
+async function dlTick() {
+  let d;
+  try { d = await api("/api/doctor/download"); }
+  catch { return setTimeout(dlTick, 3000); }  // сервер перезапускается или занят — загрузка у него в отдельном потоке
+  dl.d = d;
+  if (!dl.groups && d.groups?.length) dl.groups = d.groups;
+  if (d.active) { dlPaint(); return setTimeout(dlTick, 1000); }
+  dl.polling = false;
+  if (!d.error) dl.d = null;  // ошибку держим — после перепроверки она останется красным в своей строке
+  dlPaint(); runDoctor();     // перепроверка: докачанное станет зелёным
+}
+async function startDownload(groups, id = "", gb = 0) {
+  if (dl.polling) return;
+  Object.assign(dl, { groups, id: id || "", plan: gb * 2 ** 30, polling: true,
+    d: { active: true, groups, file: null, done_bytes: 0, total_bytes: 0, files_done: 0, files_total: 0, error: null } });
+  dlPaint();  // строка сразу: «готовлюсь…» (сервер сначала опрашивает ComfyUI), кнопка — «Качаю…»
+  try { await api("/api/doctor/download", json("POST", { groups })); }
+  catch (e) { dl.polling = false; dl.d = { ...dl.d, active: false, error: e.message }; return dlPaint(); }
+  dlTick();
+}
+// окно открыли, а загрузка уже идёт (запущена до перезагрузки страницы) — подхватить её по группам с сервера
+async function dlResume() {
+  if (dl.polling) return;
+  let d;
+  try { d = await api("/api/doctor/download"); } catch { return; }
+  if (!d.active || dl.polling) return;
+  Object.assign(dl, { groups: d.groups?.length ? d.groups : null, id: "", plan: 0, polling: true, d });
+  dlPaint(); setTimeout(dlTick, 1000);
 }
 $("#lmsGet").onclick = async () => {
   try { await api("/api/doctor/local_model", json("POST", {})); } catch (e) { return alert(e.message); }

@@ -189,6 +189,8 @@ def sec_git(b):
 
 def sec_comfy(b):
     url = (_cfg().get("comfy_url") or "http://127.0.0.1:8188").rstrip("/")
+    find = getattr(config, "find_comfy_launch", None)  # чем кнопка «Запустить ComfyUI» стала бы его запускать
+    b.line(f"Запуск ComfyUI: {(find and find()) or 'не найден — поле comfy_launch в настройках'}")
     try:
         st = http_json(url + "/system_stats", 5)
     except Exception as e:  # noqa: BLE001

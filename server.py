@@ -148,6 +148,37 @@ def build_prompt(pid, notes, local_ok=True, kind="edit"):
     return en, engine
 
 
+NO_LLM = ("Текстовой модели нет: добавьте ключ OpenAI или поставьте LM Studio с моделью (Настройки → Текстовая модель) — "
+          "или напишите промпт по-английски сами")
+_LOCAL = {"t": 0.0, "ok": False}
+
+
+def local_llm_ok():
+    """Есть ли LM Studio с нужной моделью. Без этой проверки кнопка «Из заметки» ставила перевод в очередь и висела
+    на «перевожу…»: lms нет — ошибка не сразу, модели нет — `lms load` начинает её качать. `lms ls` — секунды, кэш на минуту."""
+    if time.time() - _LOCAL["t"] > 60:
+        lms, ok = config.find_lms(), False
+        if lms:
+            try:
+                ls = subprocess.run([lms, "ls"], capture_output=True, text=True, timeout=30,
+                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+                ok = config.get("local_model").split("/")[-1].lower() in ls.lower()
+            except Exception:  # noqa: BLE001
+                ok = False
+        _LOCAL.update(t=time.time(), ok=ok)
+    return _LOCAL["ok"]
+
+
+def text_model():
+    """Чем сейчас переводить заметки: "openai", "local" или None (выключено или нечем)."""
+    mode = config.get("llm_mode")
+    if mode in ("auto", "openai") and llm_openai.available():
+        return "openai"
+    if mode in ("auto", "local") and local_llm_ok():
+        return "local"
+    return None
+
+
 def prompt_kind(m):
     """Какой промпт нужен пропу сейчас: в режиме «по тексту» — t2i, иначе подпись для перерисовки кадра."""
     p = m["params"]
@@ -160,10 +191,10 @@ def t2i_prompt(m):
     if t and not llm.has_cyrillic(t):
         return t
     notes = m.get("notes") or m.get("desc") or t
-    if config.get("llm_mode") == "off":
+    if text_model() is None:
         if notes and not llm.has_cyrillic(notes):  # английская заметка — сама себе промпт, допишем только кадр
             return llm.t2i_finish(notes, notes)
-        raise RuntimeError("режим «по тексту»: текстовая модель выключена — напиши описание по-английски")
+        raise RuntimeError("режим «по тексту»: " + NO_LLM[0].lower() + NO_LLM[1:])
     en, engine = build_prompt(m["id"], notes, kind="t2i")
 
     def fn(mm):
@@ -180,7 +211,9 @@ def english_desc(m):
     if desc and not llm.has_cyrillic(desc):
         return desc
     notes = m.get("notes") or desc
-    if config.get("llm_mode") == "off":  # текстовая модель выключена — генератор получит заметку как есть
+    if text_model() is None:  # выключена или нечем переводить — генератор получит заметку как есть
+        with open(pdir(m["id"], "logs", "views.log"), "a", encoding="utf-8") as f:
+            f.write(f"\n[промпт] текстовой модели нет — заметка как есть: {notes}\n")
         return notes
     en, engine = build_prompt(m["id"], notes)
 
@@ -495,6 +528,8 @@ def describe(pid: str, body: dict):
         raise HTTPException(400, "текстовая модель выключена в настройках")
     if mode == "openai":
         raise HTTPException(503, "OpenAI недоступен: нет ключа, сети или исчерпан дневной лимит — см. настройки")
+    if not local_llm_ok():  # не ставим в очередь то, что заведомо не выполнится
+        raise HTTPException(409, NO_LLM)
     enqueue(pid, "describe", notes=notes, kind=kind)
     return public(load(pid))
 
@@ -677,7 +712,7 @@ def get_settings():
     key = config.openai_key()
     cfg["openai_key"] = _mask(key)
     return {"config": cfg, "defaults": config.DEFAULTS, "has_key": bool(key),
-            "detected": {"blender": config.find_blender(), "lms": config.find_lms()}}
+            "detected": {"blender": config.find_blender(), "lms": config.find_lms(), "comfy_launch": config.find_comfy_launch()}}
 
 
 @app.post("/api/settings")
@@ -685,10 +720,14 @@ def set_settings(body: dict):
     ch = {k: v for k, v in body.items() if k in config.DEFAULTS}
     if "openai_key" in ch and "…" in str(ch["openai_key"]):
         ch.pop("openai_key")  # прислали маску — ключ не меняли
+    for k in ("blender", "lms", "comfy_launch", "models_dir"):
+        if isinstance(ch.get(k), str):  # «Копировать как путь» в Проводнике добавляет кавычки
+            ch[k] = ch[k].strip().strip('"').strip()
     for k in ("port", "openai_daily_usd"):
         if k in ch:
             ch[k] = (int if k == "port" else float)(ch[k] or 0)
     config.save(ch)
+    _LOCAL["t"] = 0  # путь к lms или модель могли поменяться — перепроверить при следующем переводе
     return get_settings()
 
 
@@ -735,6 +774,87 @@ def get_debug():
 def get_engines():
     """Какие необязательные движки есть в ComfyUI прямо сейчас (быстро — без полного /api/doctor)."""
     return {"krea2": doctor.krea_files()}
+
+
+# ---------- запуск ComfyUI из интерфейса: кнопка «Запустить ComfyUI», когда он не отвечает
+# Лаунчер — config.comfy_launch_plan(): exe Desktop, .bat portable или main.py (python рядом, у Desktop 2 — его аргументы)
+
+COMFY_START = {"at": None, "path": "", "kind": "", "proc": None}
+COMFY_ALT = ("http://127.0.0.1:8188", "http://127.0.0.1:8000", "http://127.0.0.1:8189")  # как doctor.check_comfy
+
+
+def _comfy_alive(url, timeout=2.0):
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url.rstrip("/") + "/system_stats", timeout=timeout):
+            return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@app.get("/api/comfy/start")
+def comfy_start_state():
+    """Для опроса из интерфейса: запускали ли и когда, отвечает ли ComfyUI — по comfy_url или на соседнем порту."""
+    from concurrent.futures import ThreadPoolExecutor
+    url = config.get("comfy_url").rstrip("/")
+    at = COMFY_START["at"]
+    # все адреса разом: отказ в соединении с localhost на Windows приходит лишь через ~1–2 с, а опрос — раз в 2 с
+    urls = [url] + [a for a in COMFY_ALT if a != url]
+    with ThreadPoolExecutor(len(urls)) as ex:
+        alive = dict(zip(urls, ex.map(_comfy_alive, urls)))
+    out = {"ok": alive[url], "url": url, "launch": config.find_comfy_launch(),
+           "started": at is not None, "started_at": at, "elapsed": round(time.time() - at) if at else None,
+           "path": COMFY_START["path"], "kind": COMFY_START["kind"]}
+    if not out["ok"]:
+        # Desktop поднимает сервер на своём порту (у 1.x по умолчанию 8000) — интерфейс предложит поправить адрес
+        out["found_at"] = next((a for a in urls[1:] if alive[a]), None)
+        p = COMFY_START["proc"]
+        if p is not None and COMFY_START["kind"] in ("main", "desktop2") and p.poll() is not None:
+            out["exited"] = p.returncode  # python ComfyUI вышел, так и не ответив, — ждать дальше незачем
+    return out
+
+
+@app.post("/api/comfy/start")
+def comfy_start():
+    st = comfy_start_state()
+    if st["ok"] or st["found_at"]:
+        return {**st, "already": True}  # второй ComfyUI рядом — двойной расход видеопамяти, не запускаем
+    p = COMFY_START["proc"]
+    if COMFY_START["at"] and time.time() - COMFY_START["at"] < 180 and p is not None and p.poll() is None:
+        return {**st, "already": False, "starting": True}  # повторное нажатие, пока он ещё поднимается
+    plan = config.comfy_launch_plan()
+    if not plan:
+        raise HTTPException(409, "Не нашёл, чем запускать ComfyUI — укажите путь в Настройки → ComfyUI и Blender → «Запуск ComfyUI»")
+    if plan.get("error"):
+        raise HTTPException(409, f"{plan['path']}: {plan['error']}")
+    kw = {"cwd": plan["cwd"], "close_fds": True}
+    flags = 0
+    if os.name != "nt":
+        kw.update(start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif plan["kind"] == "exe":
+        # у Desktop своё окно; отвязываем от консоли и Ctrl+C сервера, чтобы он пережил перезапуск propgen
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        kw.update(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        # .bat и main.py — в своём консольном окне (свёрнутом, без кражи фокуса): там лог ComfyUI, а закрыть окно =
+        # остановить ComfyUI. Без своей консоли процесс был бы невидимым и его пришлось бы искать в диспетчере задач
+        flags = subprocess.CREATE_NEW_CONSOLE
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 7  # SW_SHOWMINNOACTIVE
+        kw["startupinfo"] = si
+    try:
+        try:  # из задачи-«job» (если сервер в ней) — наружу, иначе ComfyUI умрёт вместе с сервером
+            proc = subprocess.Popen(plan["argv"], creationflags=flags | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0), **kw)
+        except OSError:  # job не разрешает выход — запускаем как есть
+            proc = subprocess.Popen(plan["argv"], creationflags=flags, **kw)
+    except OSError as e:
+        raise HTTPException(500, f"не запустился {plan['path']}: {e}")
+    COMFY_START.update(at=time.time(), path=plan["path"], kind=plan["kind"], proc=proc)
+    out = {**comfy_start_state(), "already": False}
+    if plan["kind"] == "exe" and os.path.basename(plan["path"]).lower() == "comfy desktop.exe":
+        out["note"] = "Comfy Desktop откроет панель установок — запустите в ней ComfyUI"
+    return out
 
 
 @app.post("/api/doctor/download")
