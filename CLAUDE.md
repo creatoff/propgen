@@ -12,6 +12,7 @@
 | Проверить, что всё едет целиком | сервер запущен → `.venv\Scripts\python tools\smoke.py` (пример `examples/kettle.png`, печатает время шагов) |
 | Что сейчас происходит | `GET http://127.0.0.1:8795/api/queue` — текущий шаг, очередь, живой прогресс ComfyUI (`comfy.cls/value/max/last_event`) |
 | Почему шаг упал | `work/props/<id>/logs/<views|mesh|lowpoly|export>.log`, статус — `work/props/<id>/meta.json` → `steps` |
+| Пришёл багрепорт | `https://private.neveleno.ru/propgen-bugs/` (пароль владельца): список отчётов, у каждого `report.zip` = отладочный архив + `report.json` (`title`, `text` — оформлен ИИ и проверен человеком, `raw` — как рассказал, `contact`, `prop`, `version`) и скриншот. Дальше — как с `debug-*.zip` ниже |
 | Друг прислал `debug-*.zip` / разобрать чужую поломку | начни с `summary.txt` (ОС, git, ComfyUI/GPU, Blender, LLM, сервер, итог doctor), затем `doctor.json`; дальше `errors.txt`, `server.log`, `props/<id>/logs`, `comfy_log.txt`. Собирает `debug.cmd` / `tools/debug.py` / `GET /api/debug` (только stdlib, ключи маскируются и перепроверяются) |
 
 ## Запуск
@@ -74,6 +75,14 @@
   `GET /api/version` → `head`, `started`, `installed`, `version`, `tag`, `data`.
   Интерфейс держит заставку `#splash` до загрузки пропов и настроек (`boot()` в app.js) и показывает её снова,
   если `poll()` дважды подряд не достучался до сервера; `/api/doctor` идёт уже за заставкой.
+- Багрепорт (кнопка-жук в шапке и «Сообщить о проблеме» в «Системе»): шаг 1 — рассказ голосом (MediaRecorder, до 3 мин)
+  и/или текстом → `POST /api/report/draft` (multipart `text`, `audio`, `prop`) → `debug.draft()` шлёт JSON на
+  `report_url + "/draft"`; приёмник распознаёт речь и оформляет отчёт **своим** ключом OpenAI (у пользователя ключ не
+  нужен) → `{transcript, title, text}`. Шаг 2 — человек правит и жмёт «Отправить» → `POST /api/report` → `debug.collect()` +
+  `debug.add_report()` (report.json, скриншот, scrub + verify) → `debug.send()` zip на `report_url`. Не ушло — 502 с путём
+  к архиву. `debug.cmd` спрашивает описание в консоли и отправляет сам (`--no-send` — нет). Контакт запоминается в
+  `report_contact`. Приёмник — стек `stacks/bugs` в `C:\dev\beelink-server` (контракт и лимиты — его README); все запросы
+  несут `X-Propgen-Report: 1`. Проверка без приёмника: `report_url` копии данных → локальная заглушка.
 - `POST /api/props/<id>/export {height_cm, sources}` → `tools/pack.py` + Blender `tools/export.py` → zip по схеме Poly Haven.
 - `web/` — статика без сборки: `app.js` (вся логика), `controls.js` (свои select/range/number поверх нативных),
   `index.html`, `style.css`. three.js с CDN. Просмотрщик 3D создаётся только на вкладке «Модель» при пустой очереди

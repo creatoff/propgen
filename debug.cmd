@@ -43,5 +43,5 @@ if not exist "%OUT%" (
 rem open the zip folder with the file selected
 explorer /select,"%OUT%"
 echo.
-echo Send this file: %OUT%
+echo If it was not sent above, send this file: %OUT%
 pause

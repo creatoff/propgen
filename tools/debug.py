@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 import traceback
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -536,6 +537,92 @@ def verify(path):
     return bad
 
 
+# ---------- багрепорт: тот же архив + report.json (описание от человека) уходит на приёмник разработчика
+# Приёмник (stacks/bugs в beelink-server) требует report.json в корне zip и заголовок X-Propgen-Report — это фильтр
+# от сканеров, а не секрет: репозиторий публичный. Ответ — JSON {ok, id} или {ok: false, error} с текстом по-русски.
+
+SHOT_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
+MAX_SHOT = 8 << 20  # приёмник берёт zip до 20 МБ; скриншот 4K в PNG — около 5 МБ
+
+
+def add_report(path, title, text, contact="", prop="", shot=None, shot_type="", raw=""):
+    """Дописать в готовый архив report.json и скриншот. Текст человека тоже проходит scrub: ключ вставят и туда."""
+    secrets = _secrets()
+    rep = {
+        "title": scrub(str(title or "").strip()[:200], secrets),
+        "text": scrub(str(text or "").strip()[:20000], secrets),
+        "contact": scrub(str(contact or "").strip()[:200], secrets),
+        "prop": str(prop or "")[:80],
+        "raw": scrub(str(raw or "").strip()[:20000], secrets),  # рассказ как был, до оформления ИИ
+        "version": config.version_info() if config else {},
+        "os": f"{platform.system()} {platform.release()} ({platform.version()})",
+        "created": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+    with zipfile.ZipFile(path, "a", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("report.json", json.dumps(rep, ensure_ascii=False, indent=1))
+        if shot and len(shot) <= MAX_SHOT and shot_type in SHOT_EXT:
+            z.writestr(f"screenshot.{SHOT_EXT[shot_type]}", shot)
+    leaks = verify(path)
+    if leaks:
+        os.remove(path)
+        raise RuntimeError(f"в отчёте нашёлся ключ ({', '.join(leaks)}) — отчёт удалён")
+    return rep
+
+
+def send(path, url=None, timeout=60):
+    """Отправить архив разработчику. Возвращает id отчёта; RuntimeError с понятным текстом, если не ушло."""
+    url = url or (config.get("report_url") if config else "")
+    if not url:
+        raise RuntimeError("адрес приёма отчётов не задан (report_url)")
+    with open(path, "rb") as f:
+        body = f.read()
+    return str(_post(url, body, "application/zip", timeout).get("id") or "")
+
+
+MAX_AUDIO = 5 << 20  # ~3 мин речи в opus с запасом; приёмник режет на том же пороге
+
+
+def draft(text="", audio=None, audio_type="", context=None, timeout=120):
+    """Сумбурный рассказ (текст и/или запись голоса) → оформленный отчёт {transcript, title, text}.
+    Распознаёт и оформляет приёмник разработчика своим ключом OpenAI — у пользователя ключ не нужен."""
+    import base64
+    url = (config.get("report_url") if config else "").rstrip("/")
+    if not url:
+        raise RuntimeError("адрес приёма отчётов не задан (report_url)")
+    body = json.dumps({"text": scrub(str(text or "")[:20000]), "context": context or {},
+                       "audio": base64.b64encode(audio).decode("ascii") if audio else None,
+                       "audio_type": audio_type or ""}, ensure_ascii=False).encode("utf-8")
+    return _post(url + "/draft", body, "application/json", timeout)
+
+
+def _post(url, body, ctype, timeout):
+    """POST на приёмник: JSON-ответ {ok, …}; отказ — RuntimeError с его же текстом (размер, частота, место)."""
+    req = urllib.request.Request(url, data=body, method="POST", headers={
+        "Content-Type": ctype, "X-Propgen-Report": "1",
+        "User-Agent": f"propgen/{(config.version_info().get('version') if config else '') or 'dev'}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = json.loads(r.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read().decode("utf-8")).get("error")
+        except Exception:  # noqa: BLE001
+            msg = ""
+        raise RuntimeError(msg or f"приёмник ответил {e.code}") from None
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise RuntimeError(f"нет связи с приёмником отчётов: {getattr(e, 'reason', e)}") from None
+    if not d.get("ok"):
+        raise RuntimeError(d.get("error") or "приёмник не принял запрос")
+    return d
+
+
+def _ask(prompt):
+    """Вопрос в консоли debug.cmd: подсказка — в stderr, потому что stdout батник пишет в файл (последняя строка — путь)."""
+    sys.stderr.write(prompt)
+    sys.stderr.flush()
+    return (sys.stdin.readline() or "").strip()
+
+
 if __name__ == "__main__":
     for s in (sys.stdout, sys.stderr):  # кириллица в консоли Windows без chcp 65001
         try:
@@ -549,4 +636,17 @@ if __name__ == "__main__":
         n = len(z.namelist())
     # collect() уже перепроверил архив и удалил бы его при утечке — здесь только сообщаем
     print(f"Файлов в архиве: {n}; " + ("ключа OpenAI в нём нет (проверено)." if _secrets() else "ключ OpenAI не задан."))
+    # отправка прямо отсюда: debug.cmd нужен как раз тогда, когда сервер с кнопкой в интерфейсе не поднялся
+    if "--no-send" not in sys.argv and config and config.get("report_url") and sys.stdin and sys.stdin.isatty():
+        what = _ask("\nОтправить архив разработчику? Опишите, что случилось (Enter — не отправлять):\n> ")
+        if what:
+            who = config.get("report_contact") or _ask("Как с вами связаться — имя, Telegram (Enter — пропустить):\n> ")
+            try:
+                add_report(p, what[:120], what, who)
+                if who and who != config.get("report_contact"):
+                    config.save({"report_contact": who})
+                rid = send(p)
+                print(f"Отчёт отправлен разработчику (номер {rid}). Архив остался здесь:")
+            except Exception as e:  # noqa: BLE001 — архив всё равно есть, его можно прислать руками
+                print(f"Отправить не удалось: {e}. Пришлите архив вручную:")
     print(p)

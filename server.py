@@ -987,6 +987,58 @@ def get_debug():
     return FileResponse(path, media_type="application/zip", filename=os.path.basename(path))
 
 
+@app.post("/api/report")
+def post_report(title: str = Form(""), text: str = Form(""), contact: str = Form(""), prop: str = Form(""),
+                raw: str = Form(""), screenshot: UploadFile | None = File(None)):
+    """Багрепорт разработчику: отладочный архив (как /api/debug) + описание и скриншот → приёмник report_url.
+    Не ушло (нет сети, приёмник отказал) — 502 с путём к архиву: его можно прислать вручную."""
+    import debug  # noqa: E402 — как в /api/debug: сломанный debug.py не мешает серверу подняться
+    if not text.strip():
+        raise HTTPException(400, "опишите, что случилось")
+    shot = screenshot.file.read(debug.MAX_SHOT + 1) if screenshot else None
+    if shot and len(shot) > debug.MAX_SHOT:
+        raise HTTPException(413, "скриншот больше 8 МБ")
+    try:
+        path = debug.collect()
+        debug.add_report(path, title or text.strip().splitlines()[0][:120], text, contact, prop,
+                         shot, screenshot.content_type if screenshot else "", raw)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"отчёт не собрался: {e}")
+    if contact.strip() != config.get("report_contact"):
+        config.save({"report_contact": contact.strip()})  # чтобы не вводить в следующий раз
+    try:
+        rid = debug.send(path)
+    except RuntimeError as e:
+        raise HTTPException(502, f"{e}. Архив сохранён: {path} — пришлите его вручную")
+    return {"ok": True, "id": rid, "file": os.path.basename(path)}
+
+
+@app.post("/api/report/draft")
+def post_report_draft(text: str = Form(""), prop: str = Form(""), audio: UploadFile | None = File(None)):
+    """Рассказ своими словами (текст и/или запись голоса) → оформленный отчёт для показа перед отправкой.
+    Распознаёт и оформляет приёмник разработчика своим ключом OpenAI, поэтому работает и без ключа в настройках."""
+    import debug  # noqa: E402
+    data = audio.file.read(debug.MAX_AUDIO + 1) if audio else None
+    if data and len(data) > debug.MAX_AUDIO:
+        raise HTTPException(413, "запись слишком длинная — до 3 минут")
+    if not text.strip() and not data:
+        raise HTTPException(400, "расскажите голосом или напишите, что случилось")
+    ctx = {"version": config.version_info().get("version", ""), "os": sys.platform}
+    try:  # проп, о котором речь, и его ошибки — чтобы ИИ понял «оно упало на 3D»
+        m = load(prop) if prop else None
+    except Exception:  # noqa: BLE001
+        m = None
+    if m:
+        ctx["prop"] = m.get("name") or prop
+        ctx["errors"] = [f"{k}: {str(v.get('error')).strip().splitlines()[-1][:300]}"
+                         for k, v in (m.get("steps") or {}).items() if (v or {}).get("error")][:5]
+    try:
+        d = debug.draft(text, data, (audio.content_type or "").split(";")[0] if audio else "", ctx)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    return {"transcript": d.get("transcript", ""), "title": d.get("title", ""), "text": d.get("text", "")}
+
+
 @app.get("/api/engines")
 def get_engines():
     """Какие необязательные движки есть в ComfyUI прямо сейчас (быстро — без полного /api/doctor)."""

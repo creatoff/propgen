@@ -280,6 +280,32 @@ kbd { font: 11px "Cascadia Code", Consolas, monospace; padding: 1px 5px; border-
 .thumbs img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; margin-bottom: 8px; box-shadow: 0 0 0 1px var(--line); }
 .dlg-btns { display: flex; justify-content: flex-end; gap: 8px; }
 
+/* багрепорт */
+button.icon.bug svg { width: 18px; height: 18px; stroke-linecap: round; }
+dialog.bug-dlg { width: 560px; }
+dialog.bug-dlg textarea { resize: vertical; min-height: 80px; }
+.bug-step { display: flex; flex-direction: column; gap: 12px; }
+.bug-step[hidden] { display: none; }
+.bug-lead { margin: 0; font-size: 12.5px; line-height: 1.45; }
+.bug-rec { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.bug-mic { display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px 7px 10px; border-radius: 20px; }
+.bug-mic svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+.bug-mic.rec { background: var(--err); color: #fff; animation: bugPulse 1.2s ease-in-out infinite; }
+@keyframes bugPulse { 50% { box-shadow: 0 0 0 6px rgba(255, 80, 80, .18); } }
+.bug-rec-st { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+.bug-rec audio { height: 32px; flex: 1; min-width: 200px; }
+.bug-shot { position: relative; padding: 12px; }
+.bug-shot img { display: block; max-width: 100%; max-height: 160px; margin: 0 auto; border-radius: 8px; box-shadow: 0 0 0 1px var(--line); }
+.bug-shot #bugImgDel { position: absolute; top: 6px; right: 6px; }
+.bug-heard { font-size: 12px; color: var(--dim); }
+.bug-heard summary { cursor: pointer; }
+.bug-heard p { margin: 6px 0 0; white-space: pre-wrap; line-height: 1.45; }
+.bug-what { margin: 0; font-size: 11.5px; line-height: 1.45; }
+.bug-state { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--acc2); white-space: pre-wrap; word-break: break-word; }
+.bug-state:empty { display: none; }
+.bug-state.err { color: var(--err); }
+dialog.bug-dlg .dlg-btns .spacer { flex: 1; }
+
 /* всплывашка */
 .toast { position: fixed; left: 50%; bottom: 38px; transform: translateX(-50%); background: var(--island3); border: 1px solid var(--line2); border-radius: 10px;
   padding: 8px 14px; box-shadow: 0 10px 30px rgba(0, 0, 0, .5); z-index: 50; animation: toast 2.6s forwards; pointer-events: none; }
@@ -324,7 +350,7 @@ dialog.settings[open] { display: flex; }
 .sec-h > div { flex: 1; min-width: 0; }
 .sec-h h4 { margin: 0; font-size: 16px; font-weight: 600; }
 .sec-h p { margin: 3px 0 0; color: var(--dim); font-size: 12.5px; line-height: 1.45; max-width: 560px; }
-.sec-h .sec-btns { display: flex; gap: 8px; flex-shrink: 0; }
+.sec-h .sec-btns { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; flex-shrink: 0; max-width: 46%; }
 .sec-h .dbg-state:empty { display: none; }
 .sec-h .dbg-state { color: var(--acc2); }
 .fgroup { display: flex; flex-direction: column; gap: 10px; }

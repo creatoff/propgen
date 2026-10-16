@@ -54,6 +54,9 @@ DEFAULTS = {
     "lmstudio_url": "http://127.0.0.1:1234",
     "lms": "",                   # путь к lms(.exe) — CLI LM Studio; пусто — ~/.lmstudio/bin
     "local_model": "google/gemma-3-4b",
+    # багрепорты: приёмник разработчика (stacks/bugs в beelink-server) и как связаться с автором — запоминается после отправки
+    "report_url": "https://bugs.neveleno.ru/propgen",
+    "report_contact": "",
 }
 
 

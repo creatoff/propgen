@@ -46,6 +46,7 @@
     <div class="panel-toggles">
       <button class="icon" id="tglSide" title="Список пропов · Ctrl+B"><svg viewBox="0 0 20 16"><rect x="1" y="1" width="18" height="14" rx="3"/><rect class="f" x="1" y="1" width="6" height="14" rx="3"/></svg></button>
       <button class="icon" id="tglInsp" title="Инспектор · Ctrl+Alt+B"><svg viewBox="0 0 20 16"><rect x="1" y="1" width="18" height="14" rx="3"/><rect class="f" x="13" y="1" width="6" height="14" rx="3"/></svg></button>
+      <button class="icon bug" id="bugBtn" title="Сообщить о проблеме разработчику"><svg viewBox="0 0 20 20"><rect x="6" y="6.5" width="8" height="10" rx="4"/><path d="M8 6.5a2 2 0 0 1 4 0M10 9.5v7M6 10H3M14 10h3M6 13.5l-2.6 1.6M14 13.5l2.6 1.6M6.4 7.6 4 6M13.6 7.6 16 6"/></svg></button>
       <button class="icon gear" id="settingsBtn" title="Настройки и проверка системы"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="2.6"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M4.2 15.8l1.7-1.7M14.1 5.9l1.7-1.7"/><circle cx="10" cy="10" r="5.6"/></svg></button>
     </div>
     <button id="runAll" class="primary" disabled title="Все шаги конвейера по порядку">▶ Всё сразу</button>
@@ -280,6 +281,7 @@
           <p class="dbg-state" id="dbgState"></p></div>
           <!-- отчёт — в шапке: когда что-то сломано, цепочка длинная, и кнопка внизу не видна -->
           <div class="sec-btns">
+            <button class="small" id="bugFromSet" type="button" title="Описание и отладочный архив уйдут разработчику">Сообщить о проблеме</button>
             <button class="small" id="dbgGet" type="button" title="Архив с логами и состоянием системы, без ключей — пришлите его, если что-то не работает">Отчёт для отладки</button>
             <button class="small" id="docRun">Проверить снова</button></div></div>
         <div class="checks" id="checks"><div class="hint">проверяю…</div></div>
@@ -364,6 +366,45 @@
     <button class="ghost" id="lbNext" title="→ следующий">›</button><span class="hint">колесо — масштаб · тянуть — двигать · двойной клик — 100% · Esc</span>
     <button class="ghost" id="lbClose">✕</button></div>
 </div>
+
+<!-- ===== багрепорт: описание + скриншот + отладочный архив → приёмник разработчика (POST /api/report) ===== -->
+<dialog id="bugDlg" class="bug-dlg">
+  <form method="dialog" id="bugForm">
+    <h3 id="bugH">Сообщить о проблеме</h3>
+    <!-- шаг 1: рассказ своими словами — голосом и/или текстом; ИИ на приёмнике оформит его в отчёт -->
+    <div class="bug-step" id="bugTell">
+      <p class="hint bug-lead">Расскажите своими словами, как получится: что делали, что ожидали и что вышло. Можно голосом — разберём и оформим.</p>
+      <div class="bug-rec">
+        <button type="button" class="bug-mic" id="bugMic" title="Записать голосом (до 3 минут)"><svg viewBox="0 0 20 20"><rect x="7" y="2.5" width="6" height="10" rx="3"/><path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5"/></svg><span id="bugMicT">Надиктовать</span></button>
+        <span class="bug-rec-st" id="bugRecSt"></span>
+        <button type="button" class="ghost small" id="bugRecDel" hidden title="удалить запись">✕</button>
+        <audio id="bugAudio" controls hidden></audio>
+      </div>
+      <textarea id="bugRaw" rows="4" placeholder="…или напишите здесь — можно сумбурно"></textarea>
+      <div class="dz bug-shot" id="bugDz">
+        <input type="file" id="bugFile" accept="image/png,image/jpeg,image/webp" hidden>
+        <img id="bugImg" alt="" hidden><button type="button" class="ghost small" id="bugImgDel" hidden title="убрать скриншот">✕</button>
+        <div class="dz-hint" id="bugDzHint">Скриншот — <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>, затем <kbd>Ctrl</kbd>+<kbd>V</kbd> сюда, или <a href="#" id="bugPick">выбрать файл</a>. Необязательно.</div>
+      </div>
+    </div>
+    <!-- шаг 2: оформленный отчёт — человек проверяет и правит перед отправкой -->
+    <div class="bug-step" id="bugCheck" hidden>
+      <label>Заголовок<input id="bugTitle" maxlength="200"></label>
+      <label>Отчёт — поправьте, если что-то не так<textarea id="bugText" rows="9"></textarea></label>
+      <details class="bug-heard" id="bugHeardBox" hidden><summary>Что распознано из записи</summary><p id="bugHeard"></p></details>
+      <label>Как с вами связаться<input id="bugContact" placeholder="имя или Telegram — необязательно, запомнится"></label>
+      <p class="hint bug-what">Вместе с отчётом уйдёт отладочный архив: сведения о системе, ComfyUI и Blender, логи сервера и трёх последних пропов.
+        Фото и модели в него не входят, ключи вырезаются.<span id="bugProp"></span></p>
+    </div>
+    <p class="bug-state" id="bugState"></p>
+    <div class="dlg-btns">
+      <button value="cancel" formnovalidate id="bugCancel">Отмена</button><span class="spacer"></span>
+      <button type="button" id="bugBack" hidden>← Назад</button>
+      <button type="button" class="primary" id="bugMake">Оформить</button>
+      <button id="bugOk" class="primary" value="ok" hidden>Отправить</button>
+    </div>
+  </form>
+</dialog>
 
 <!-- ===== запуск без рамки ===== -->
 <dialog id="cropDlg" class="small-dlg">

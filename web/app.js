@@ -698,10 +698,11 @@ $("#newForm").onsubmit = async e => {
 // фото можно бросить прямо в окно
 let dragDepth = 0;
 const hasFiles = e => [...(e.dataTransfer?.types || [])].includes("Files");
-addEventListener("dragenter", e => { if (hasFiles(e) && !dlg.open) { dragDepth++; $(".app").classList.add("drag"); } });
+addEventListener("dragenter", e => { if (hasFiles(e) && !dlg.open && !bugDlg.open) { dragDepth++; $(".app").classList.add("drag"); } });
 addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; $(".app").classList.remove("drag"); } });
 addEventListener("dragover", e => { if (hasFiles(e)) e.preventDefault(); });
 addEventListener("drop", e => {
+  if (hasFiles(e) && bugDlg.open) { e.preventDefault(); return setBugShot(e.dataTransfer.files[0]); }  // мимо поля — тоже скриншот, а не переход на файл
   if (!hasFiles(e) || dlg.open) return;
   e.preventDefault(); dragDepth = 0; $(".app").classList.remove("drag");
   openNew([...e.dataTransfer.files]);
@@ -720,6 +721,7 @@ addEventListener("paste", async e => {
     .map((i, k) => { const f = i.getAsFile(); return new File([f], `clipboard-${Date.now()}-${k}.${(f.type.split("/")[1] || "png")}`, { type: f.type }); });
   if (!imgs.length) return;  // обычный текст — в поле ввода как обычно
   e.preventDefault();
+  if (bugDlg.open) return setBugShot(imgs[0]);
   if (dlg.open) return addFiles(imgs);
   if (cur && tab === "crop") {
     const fd = new FormData();
@@ -1261,6 +1263,145 @@ $("#dbgGet").onclick = async () => {
   btn.disabled = false;
 };
 
+// ---- багрепорт в два шага. «Расскажите»: голос (MediaRecorder) и/или сумбурный текст → POST /api/report/draft —
+// приёмник разработчика распознаёт речь и оформляет отчёт своим ключом OpenAI (у пользователя ключ не нужен).
+// «Проверьте»: заголовок и текст можно поправить → POST /api/report: описание + скриншот + отладочный архив.
+// Сервер собирает архив до минуты, поэтому окно не закрывается до ответа; не ушло — путь к архиву в тексте ошибки.
+const bugDlg = $("#bugDlg");
+const REC_MAX = 180;  // секунд; приёмник берёт до 5 МБ — opus столько не наберёт и за 10 минут, но рассказ длиннее не нужен
+let bugShot = null, bugRec = null, bugVoice = null, bugBusy = false;
+function setBugShot(f) {
+  bugShot = f && /^image\/(png|jpeg|webp)$/.test(f.type) ? f : null;
+  const img = $("#bugImg");
+  if (img.src) URL.revokeObjectURL(img.src);
+  img.hidden = $("#bugImgDel").hidden = !bugShot; $("#bugDzHint").hidden = !!bugShot;
+  img.src = bugShot ? URL.createObjectURL(bugShot) : "";
+  if (f && !bugShot) bugState("скриншот — только PNG, JPEG или WebP", true);
+}
+function bugState(text, err = false) { const s = $("#bugState"); s.textContent = text; s.classList.toggle("err", err); }
+function bugStep(check) {
+  $("#bugTell").hidden = check; $("#bugCheck").hidden = !check;
+  $("#bugMake").hidden = check; $("#bugOk").hidden = $("#bugBack").hidden = !check;
+  $("#bugH").textContent = check ? "Проверьте отчёт" : "Сообщить о проблеме";
+}
+function setBugVoice(blob) {
+  bugVoice = blob;
+  const a = $("#bugAudio");
+  if (a.src) URL.revokeObjectURL(a.src);
+  a.src = blob ? URL.createObjectURL(blob) : "";
+  a.hidden = $("#bugRecDel").hidden = !blob;
+  $("#bugMicT").textContent = blob ? "Записать заново" : "Надиктовать";
+  if (!blob) $("#bugRecSt").textContent = "";
+}
+function stopBugRec(discard = false) {
+  if (!bugRec) return;
+  bugRec.discard = discard;
+  if (bugRec.r.state !== "inactive") bugRec.r.stop();
+}
+async function startBugRec() {
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (e) { return bugState("микрофон недоступен: " + (e.name === "NotAllowedError" ? "доступ запрещён в браузере" : e.message) + " — напишите текстом", true); }
+  const type = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/mp4"].find(t => MediaRecorder.isTypeSupported(t)) || "";
+  const r = new MediaRecorder(stream, type ? { mimeType: type } : {}), chunks = [], t0 = Date.now();
+  bugRec = { r, discard: false };
+  r.ondataavailable = e => e.data.size && chunks.push(e.data);
+  const tick = setInterval(() => {
+    const s = (Date.now() - t0) / 1000;
+    $("#bugRecSt").textContent = `● ${fmtTime(s)} из ${fmtTime(REC_MAX)} — нажмите ещё раз, чтобы остановить`;
+    if (s >= REC_MAX) stopBugRec();
+  }, 250);
+  r.onstop = () => {
+    clearInterval(tick); stream.getTracks().forEach(t => t.stop());
+    $("#bugMic").classList.remove("rec");
+    const discard = bugRec.discard; bugRec = null;
+    if (discard) return setBugVoice(null);
+    setBugVoice(new Blob(chunks, { type: (r.mimeType || "audio/webm").split(";")[0] }));
+    $("#bugRecSt").textContent = `запись ${fmtTime((Date.now() - t0) / 1000)}`;
+  };
+  r.start(1000);
+  $("#bugMic").classList.add("rec"); $("#bugMicT").textContent = "Остановить"; bugState("");
+}
+function openBug() {
+  if (setDlg.open) setDlg.close();
+  $("#bugRaw").value = $("#bugTitle").value = $("#bugText").value = "";
+  setBugShot(null); setBugVoice(null); bugState(""); bugStep(false);
+  $("#bugHeardBox").hidden = true;
+  $("#bugContact").value = settings?.config?.report_contact || "";
+  $("#bugProp").textContent = cur ? ` Отметим, что речь о пропе «${cur.name || cur.id}».` : "";
+  bugDlg.showModal();
+  $("#bugRaw").focus();
+}
+function bugLock(on) {
+  bugBusy = on;
+  for (const id of ["#bugMake", "#bugOk", "#bugBack", "#bugMic", "#bugCancel"]) $(id).disabled = on;
+}
+$("#bugBtn").onclick = openBug;
+$("#bugFromSet").onclick = openBug;
+$("#bugMic").onclick = () => bugRec ? stopBugRec() : startBugRec();
+$("#bugRecDel").onclick = () => setBugVoice(null);
+$("#bugPick").onclick = e => { e.preventDefault(); $("#bugFile").click(); };
+$("#bugFile").onchange = () => setBugShot($("#bugFile").files[0]);
+$("#bugImgDel").onclick = () => setBugShot(null);
+const bugDz = $("#bugDz");
+bugDz.ondragover = e => { e.preventDefault(); bugDz.classList.add("over"); };
+bugDz.ondragleave = () => bugDz.classList.remove("over");
+bugDz.ondrop = e => { e.preventDefault(); e.stopPropagation(); bugDz.classList.remove("over"); setBugShot(e.dataTransfer.files[0]); };
+bugDlg.addEventListener("cancel", e => { if (bugBusy) e.preventDefault(); });  // Esc посреди оформления или отправки
+bugDlg.addEventListener("close", () => stopBugRec(true));
+$("#bugBack").onclick = () => { bugState(""); bugStep(false); };
+$("#bugMake").onclick = async () => {
+  if (bugRec) await new Promise(ok => { const r = bugRec.r; r.addEventListener("stop", () => setTimeout(ok)); stopBugRec(); });
+  const raw = $("#bugRaw").value.trim();
+  if (!raw && !bugVoice) { bugState("расскажите голосом или напишите хоть пару слов", true); return $("#bugRaw").focus(); }
+  const fd = new FormData();
+  fd.append("text", raw);
+  if (cur) fd.append("prop", cur.id);
+  if (bugVoice) fd.append("audio", bugVoice, "voice." + (bugVoice.type.split("/")[1] || "webm"));
+  bugLock(true);
+  bugState(bugVoice ? "распознаю запись и оформляю отчёт…" : "оформляю отчёт…");
+  try {
+    const d = await api("/api/report/draft", { method: "POST", body: fd });
+    $("#bugTitle").value = d.title || raw.split("\n")[0].slice(0, 120);
+    $("#bugText").value = d.text || raw;
+    $("#bugHeard").textContent = d.transcript || "";
+    $("#bugHeardBox").hidden = !d.transcript;
+    bugState(""); bugStep(true);
+  } catch (err) {
+    if (!raw) bugState("✗ " + err.message + " — напишите текстом, отправим как есть", true);
+    else {  // оформитель недоступен — не держим человека: его текст и так годится
+      $("#bugTitle").value = raw.split("\n")[0].slice(0, 120); $("#bugText").value = raw; $("#bugHeardBox").hidden = true;
+      bugStep(true); bugState("оформить не получилось (" + err.message + ") — отправим как написано", true);
+    }
+  }
+  bugLock(false);
+};
+$("#bugForm").onsubmit = async e => {
+  if (e.submitter?.value !== "ok") return;
+  e.preventDefault();
+  const text = $("#bugText").value.trim();
+  if (!text) return $("#bugText").focus();
+  const fd = new FormData();
+  fd.append("title", $("#bugTitle").value.trim()); fd.append("text", text);
+  const heard = $("#bugHeardBox").hidden ? "" : $("#bugHeard").textContent.trim();
+  fd.append("raw", [$("#bugRaw").value.trim(), heard && "Голосом: " + heard].filter(Boolean).join("\n\n"));
+  fd.append("contact", $("#bugContact").value.trim());
+  if (cur) fd.append("prop", cur.id);
+  if (bugShot) fd.append("screenshot", bugShot);
+  bugLock(true);
+  bugState("собираю отладочный архив и отправляю — до минуты…");
+  try {
+    const r = await api("/api/report", { method: "POST", body: fd });
+    if (settings?.config) settings.config.report_contact = $("#bugContact").value.trim();
+    bugLock(false);
+    bugDlg.close();
+    toast(`Отчёт отправлен${r.id ? " · № " + r.id : ""} — спасибо!`);
+  } catch (err) {
+    bugState("✗ " + err.message, true);
+    bugLock(false);
+  }
+};
+
 // ---- докачка моделей и панорам: прогресс — в той строке проверки, чьей кнопкой запущена загрузка.
 // #checks перерисовывается целиком при каждой проверке, поэтому состояние живёт в dl, а dlPaint() после каждой
 // отрисовки заново находит строку: по data-dlid нажатой кнопки, иначе по набору групп (окно открыли посреди загрузки —
@@ -1541,6 +1682,8 @@ async function boot() {
   api("/api/doctor").then(r => {
     if (setupReady(r)) return $("#settingsBtn").classList.remove("alert");
     const miss = r.minimum?.missing || [];
+    $("#settingsBtn").classList.add("alert");
+    if (bugDlg.open) return;  // человек уже пишет об ошибке — не перекрывать его окно; красная точка на ⚙ подскажет
     openSettings(miss.length ? `Открылось при запуске — не хватает ${miss.join(", ")}` : "Открылось при запуске — есть что поправить", "system");
   }).catch(() => {});
 }
