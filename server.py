@@ -1168,6 +1168,17 @@ def local_model_status():
 app.mount("/files", StaticFiles(directory=PROPS), name="files")
 
 
+@app.middleware("http")
+async def web_no_cache(request, call_next):
+    """Интерфейс — каждый раз сверять с сервером (ETag → 304, локально мгновенно). Без этого Chrome эвристически
+    держал старый app.js: после обновления — новая разметка со старым скриптом, и новые кнопки молчали."""
+    resp = await call_next(request)
+    p = request.url.path
+    if p == "/" or p.endswith((".html", ".js", ".css")) and not p.startswith(("/api/", "/files/")):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
 @app.get("/")
 def index():
     return FileResponse(os.path.join(ROOT, "web", "index.html"))
